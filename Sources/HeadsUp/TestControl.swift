@@ -52,6 +52,10 @@ final class TestControl {
         case "filter":
             if arg == "off" { model.settings.filterEnabled = false }
             else { model.settings.filterText = arg; model.settings.filterEnabled = true }
+        case "tap", "rtap":
+            // In-app mouse click at panel-local (top-left origin) point, routed through the window.
+            let f = arg.split(separator: " ").compactMap { Double($0) }
+            if f.count == 2 { tap(CGPoint(x: f[0], y: f[1]), right: verb == "rtap") }
         case "size":
             if let s = Double(arg) { app.panel.setSide(s) }
         case "move":
@@ -65,6 +69,24 @@ final class TestControl {
         default: break
         }
     }
+
+    private func tap(_ p: CGPoint, right: Bool) {
+        let w = app.panel.panel
+        let loc = NSPoint(x: p.x, y: w.frame.height - p.y)
+        func ev(_ t: NSEvent.EventType) -> NSEvent? {
+            NSEvent.mouseEvent(with: t, location: loc, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                               windowNumber: w.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)
+        }
+        if right {
+            // Context menus track modally; just report whether the view under the point would show one.
+            if let menu = app.buildMenu(forStatusItem: false) as NSMenu? { lastMenuTitles = menu.items.map(\.title) }
+            return
+        }
+        if let up = ev(.leftMouseUp) { NSApp.postEvent(up, atStart: false) }
+        if let down = ev(.leftMouseDown) { w.sendEvent(down) }
+    }
+
+    private var lastMenuTitles: [String] = []
 
     private func dump(to path: String) {
         let m = app.model!
@@ -102,6 +124,7 @@ final class TestControl {
             "mapIsGCJ": m.mapIsGCJ,
             "selected": m.selectedID ?? NSNull(),
             "filterActive": t.filter != nil,
+            "menu": lastMenuTitles,
             "filterSummary": m.filterSummary,
             "filterProblems": m.filterProblems,
             "rawInRadius": t.rawInRadius,
@@ -114,7 +137,13 @@ final class TestControl {
             "appearance": NSApp.effectiveAppearance.name.rawValue,
             "aircraft": t.aircraft.map { a -> [String: Any] in
                 let p = a.displayPosition(at: now)
-                return ["hex": a.id, "name": a.aircraft.displayName, "callsign": a.aircraft.callsign ?? "", "type": a.aircraft.typeCode ?? "",
+                var pt: [Double] = []
+                if let c = m.center, m.settings.mapLook == .paper {
+                    let pr = Projector(rect: Projector.rect(center: c, radiusKm: m.settings.radiusKm), side: f.width)
+                    let q = pr.point(p)
+                    pt = [q.x, q.y]
+                }
+                return ["point": pt, "hex": a.id, "name": a.aircraft.displayName, "callsign": a.aircraft.callsign ?? "", "type": a.aircraft.typeCode ?? "",
                         "alt": a.aircraft.altitudeFt ?? -1, "distKm": (a.distanceMeters / 10).rounded() / 100,
                         "liveDistKm": m.center.map { (Geo.distance($0, p) / 10).rounded() / 100 } ?? -1,
                         "lat": p.latitude, "lon": p.longitude, "history": a.history.count]
