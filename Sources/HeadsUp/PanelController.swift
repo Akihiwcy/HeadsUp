@@ -20,6 +20,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     private let model: AppModel
     private var bag = Set<AnyCancellable>()
     private var restored = false
+    private var zoomMonitor: Any?
     var onVisibilityChange: ((Bool) -> Void)?
 
     init(model: AppModel, actions: PanelActions) {
@@ -53,6 +54,20 @@ final class PanelController: NSObject, NSWindowDelegate {
         }
         clampToScreen()
         restored = true
+
+        // Trackpad pinch over the panel zooms the map. A local monitor sees the gesture wherever the
+        // pointer is in the panel, before SwiftUI's hosting view can swallow it.
+        zoomMonitor = NSEvent.addLocalMonitorForEvents(matching: .magnify) { [weak self] event in
+            if ProcessInfo.processInfo.environment["HEADSUP_TEST_CONTROL"] == "1" {
+                FileHandle.standardError.write("magnify window=\(String(describing: event.window?.windowNumber)) loc=\(event.locationInWindow) mag=\(event.magnification) phase=\(event.phase.rawValue)\n".data(using: .utf8)!)
+            }
+            guard let self, self.model.settings.mapDragEnabled,
+                  event.window === self.panel || (event.window == nil && self.panel.frame.contains(NSEvent.mouseLocation))
+            else { return event }
+            let ended = event.phase.contains(.ended) || event.phase.contains(.cancelled)
+            self.model.zoom(to: self.model.displayRadius / max(0.2, 1 + event.magnification), final: ended)
+            return nil
+        }
 
         model.settings.$panelLevel.sink { [weak self] in self?.apply(level: $0) }.store(in: &bag)
         model.settings.$appearance.sink { [weak self] in self?.apply(appearance: $0) }.store(in: &bag)

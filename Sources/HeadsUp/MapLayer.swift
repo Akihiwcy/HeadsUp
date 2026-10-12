@@ -52,7 +52,8 @@ struct MapLayer: View {
             .onChange(of: Key(center: center, radius: radiusKm)) { old, key in
                 let target = Projector.rect(center: key.center, radiusKm: key.radius)
                 // Animate zoom changes; follow pans immediately so the map stays under the pointer.
-                if old.radius != key.radius {
+                // Settings jumps (20 → 50 km) animate; a pinch's small steps follow directly.
+                if abs(old.radius - key.radius) / max(old.radius, 0.1) > 0.25 {
                     withAnimation(.easeInOut(duration: 0.7)) { position = .rect(target) }
                 } else {
                     position = .rect(target)

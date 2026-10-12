@@ -62,7 +62,7 @@ struct PanelChrome: View {
                     .allowsHitTesting(false)
             }
 
-            if model.viewCenter != nil {
+            if model.isViewAdjusted {
                 roundButton("location.fill", help: "回到原点", action: model.resetView)
                     .padding(.trailing, side * 0.06 + (hovering ? 64 * s : 0))
                     .padding(.top, side * 0.055)
@@ -107,7 +107,7 @@ struct PanelChrome: View {
         let r = Format.km(model.settings.radiusKm)
         if model.center == nil { return "\(r) 公里范围" }
         if tracker.lastSuccess == nil { return "— 架 · \(r) 公里内" }
-        let scope = model.viewCenter == nil ? "\(r) 公里内" : "视图中心 \(r) 公里内"
+        let scope = model.isViewAdjusted ? "视图内 \(Format.km((model.displayRadius).rounded())) 公里" : "\(r) 公里内"
         return "\(n) 架 · \(scope)" + (tracker.filter == nil ? "" : " · 已过滤")
     }
 

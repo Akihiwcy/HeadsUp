@@ -167,8 +167,8 @@ struct SettingsView: View {
                 }
                 Text("拖动面板空白处可移动位置（允许拖动地图时改为按住 ⌘ 拖动），鼠标悬停时拖动右下角可调整大小。")
                     .font(.caption).foregroundStyle(.secondary)
-                Toggle("允许拖动地图查看其他区域", isOn: $settings.mapDragEnabled)
-                Text("开启后拖动地图空白处可平移，飞机按当前看到的区域查询；原点和距离圈不动，点右上角的定位按钮回到原点。此时按住 ⌘ 拖动可移动面板。")
+                Toggle("允许拖动和缩放地图", isOn: $settings.mapDragEnabled)
+                Text("开启后拖动地图空白处可平移，在触控板上双指捏合可缩放，飞机按当前看到的区域查询；原点和距离圈不动，点右上角的定位按钮回到原点和默认缩放。此时按住 ⌘ 拖动可移动面板。")
                     .font(.caption).foregroundStyle(.secondary)
                 Toggle("登录时自动启动", isOn: Binding(get: { loginItem }, set: setLoginItem))
                 if let loginError { Text(loginError).foregroundStyle(.red).font(.callout) }
@@ -250,26 +250,18 @@ struct SettingsView: View {
         searching = true
         Task {
             defer { searching = false }
-            let req = MKLocalSearch.Request()
-            req.naturalLanguageQuery = q
-            req.resultTypes = [.address, .pointOfInterest]
-            do {
-                let items = try await MKLocalSearch(request: req).start().mapItems.prefix(5)
-                var out: [SearchResult] = []
-                for item in items {
-                    var c = Coordinate(latitude: item.placemark.coordinate.latitude, longitude: item.placemark.coordinate.longitude)
-                    // MapKit search returns coordinates in the datum of the map it serves.
-                    if ChinaCoordinate.isInMainlandChina(c), await model.mapKitServesGCJ() {
-                        c = ChinaCoordinate.gcj02ToWgs84(c)
-                    }
-                    let detail = [item.placemark.locality, item.placemark.administrativeArea, item.placemark.country]
-                        .compactMap { $0 }.joined(separator: ", ")
-                    out.append(SearchResult(name: item.name ?? q, detail: detail, coordinate: c))
+            let (merged, bothFailed) = await model.searchPlaces(q)
+            results = merged.map {
+                SearchResult(name: $0.name, detail: [$0.detail, $0.source == "OpenStreetMap" ? "OpenStreetMap" : nil]
+                                .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "),
+                             coordinate: $0.coordinate)
+            }
+            if results.isEmpty {
+                if bothFailed {
+                    searchError = "搜索服务暂时连不上，请检查网络后重试，或直接输入“纬度, 经度”"
+                } else {
+                    searchError = "没有找到“\(q)”。可以换个说法（例如加上城市名），或直接输入“纬度, 经度”"
                 }
-                results = out
-                if out.isEmpty { searchError = "没有找到“\(q)”" }
-            } catch {
-                searchError = "搜索失败：\(error.localizedDescription)"
             }
         }
     }

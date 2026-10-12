@@ -63,6 +63,21 @@ final class TestControl {
                 model.settings.routeProvider = kind
                 model.setRouteKey(f.count > 1 ? f[1] : "", for: kind)
             }
+        case "searchplace":
+            Task {
+                let r = await model.searchPlaces(arg)
+                let lines = r.results.map { "\($0.name) | \($0.detail) | \($0.coordinate.latitude),\($0.coordinate.longitude) | \($0.source)" }
+                try? (["bothFailed=\(r.bothFailed)"] + lines).joined(separator: "\n")
+                    .write(toFile: "/tmp/headsup-search.txt", atomically: true, encoding: .utf8)
+            }
+        case "pinch":
+            // "pinch x y total steps": synthesizes trackpad magnify events at a panel-local point.
+            let f = arg.split(separator: " ").compactMap { Double($0) }
+            if f.count == 4 { pinch(at: CGPoint(x: f[0], y: f[1]), total: f[2], steps: Int(f[3])) }
+        case "routecheck":
+            // Compares the configured route service with adsbdb for up to N airborne aircraft in view.
+            let n = Int(arg) ?? 8
+            Task { await routeCheck(limit: n) }
         case "size":
             if let s = Double(arg) { app.panel.setSide(s) }
         case "move":
@@ -91,6 +106,53 @@ final class TestControl {
         }
         if let up = ev(.leftMouseUp) { NSApp.postEvent(up, atStart: false) }
         if let down = ev(.leftMouseDown) { w.sendEvent(down) }
+    }
+
+    private var pinchLog: [String] = []
+
+    private func routeCheck(limit: Int) async {
+        let m = app.model!
+        let kind = m.settings.routeProvider
+        let client = LiveRouteClient(kind: kind, key: m.routeKey(for: kind))
+        let db = RouteService()
+        var lines: [String] = ["provider=\(kind.rawValue)"]
+        let planes = m.tracker.aircraft.filter { !$0.aircraft.onGround && $0.aircraft.callsign != nil }.prefix(limit)
+        for p in planes {
+            let a = p.aircraft, cs = a.callsign!
+            var live = "-"
+            do {
+                if let r = try await client.route(callsign: cs, onGround: false) { live = "\(r.origin.code)->\(r.destination.code)" } else { live = "none" }
+            } catch { live = "error: \((error as? LiveRouteError)?.localizedDescription ?? "\(error)")" }
+            var dbText = "-"
+            if case .found(let r) = await db.route(callsign: cs) {
+                dbText = "\(r.origin.code)->\(r.destination.code)" + (r.isPlausible(for: a.position, track: a.trackDeg, verticalRateFpm: a.verticalRateFpm) ? "" : " (implausible)")
+            }
+            lines.append("\(cs) alt=\(a.altitudeFt ?? -1) vr=\(a.verticalRateFpm ?? 0) trk=\(Int(a.trackDeg ?? -1)) | live: \(live) | adsbdb: \(dbText)")
+        }
+        try? lines.joined(separator: "\n").write(toFile: "/tmp/headsup-routecheck.txt", atomically: true, encoding: .utf8)
+    }
+
+    private func pinch(at p: CGPoint, total: Double, steps: Int) {
+        let w = app.panel.panel
+        // Global, top-left origin location of the point (CGEvent coordinates).
+        let screenH = NSScreen.screens.first?.frame.height ?? 0
+        let global = CGPoint(x: w.frame.minX + p.x, y: screenH - (w.frame.maxY - p.y))
+        pinchLog = []
+        for i in 0..<steps {
+            guard let cg = CGEvent(source: nil) else { continue }
+            cg.type = CGEventType(rawValue: 29)!                       // kCGEventGesture
+            cg.location = global
+            cg.setIntegerValueField(CGEventField(rawValue: 110)!, value: 8)   // gesture HID type: zoom
+            cg.setDoubleValueField(CGEventField(rawValue: 113)!, value: total / Double(steps))  // magnification
+            let phase: Int64 = i == 0 ? 1 : (i == steps - 1 ? 4 : 2)        // began / changed / ended
+            cg.setIntegerValueField(CGEventField(rawValue: 132)!, value: phase)
+            // Address it to the panel, as the window server does for a pinch over it.
+            cg.setIntegerValueField(.mouseEventWindowUnderMousePointer, value: Int64(w.windowNumber))
+            cg.setIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent, value: Int64(w.windowNumber))
+            guard let ev = NSEvent(cgEvent: cg) else { pinchLog.append("no NSEvent"); continue }
+            pinchLog.append("\(ev.type.rawValue)/w\(ev.windowNumber)/m\(ev.magnification)")
+            if ev.type == .magnify { NSApp.postEvent(ev, atStart: false) }
+        }
     }
 
     private var lastMenuTitles: [String] = []
@@ -133,6 +195,9 @@ final class TestControl {
             "filterActive": t.filter != nil,
             "menu": lastMenuTitles,
             "routeProvider": m.settings.routeProvider.rawValue,
+            "pinchLog": pinchLog,
+            "viewRadiusKm": m.viewRadiusKm ?? NSNull(),
+            "viewCenter": m.viewCenter.map { [$0.latitude, $0.longitude] } ?? NSNull(),
             "hasRouteKey": !m.routeKey(for: m.settings.routeProvider).isEmpty,
             "liveRouteError": m.liveRouteError?.localizedDescription ?? NSNull(),
             "filterSummary": m.filterSummary,

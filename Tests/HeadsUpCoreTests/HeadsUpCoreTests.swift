@@ -514,3 +514,21 @@ final class LiveRouteTests: XCTestCase {
         XCTAssertEqual(route.origin.code, "ORD")
     }
 }
+
+final class PlaceSearchTests: XCTestCase {
+    func testParseNominatimAndMerge() {
+        let json = """
+        [{"lat":"34.2157601","lon":"108.8821698","name":"新长安广场","display_name":"新长安广场, 34, 丈八街道, 雁塔区, 西安市, 陕西省, 710000, 中国"}]
+        """
+        let osm = NominatimGeocoder.parse(Data(json.utf8))
+        XCTAssertEqual(osm.count, 1)
+        XCTAssertEqual(osm[0].name, "新长安广场")
+        XCTAssertEqual(osm[0].detail, "丈八街道, 雁塔区, 西安市, 陕西省")
+        XCTAssertEqual(osm[0].coordinate.latitude, 34.2157601, accuracy: 1e-7)
+        let apple = [PlaceResult(name: "New Chang'an Plaza", detail: "", coordinate: Coordinate(latitude: 34.2158, longitude: 108.8823), source: "Apple")]
+        XCTAssertEqual(NominatimGeocoder.merge(apple, osm).count, 1, "same place from both services is listed once")
+        XCTAssertEqual(NominatimGeocoder.merge([], osm).first?.source, "OpenStreetMap")
+        XCTAssertTrue(NominatimGeocoder.parse(Data("[]".utf8)).isEmpty)
+        XCTAssertTrue(NominatimGeocoder.parse(Data("<html>".utf8)).isEmpty)
+    }
+}

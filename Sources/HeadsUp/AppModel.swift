@@ -21,6 +21,13 @@ final class AppModel: ObservableObject {
 
     /// The middle of what the panel shows: the panned view, or the origin.
     var displayCenter: Coordinate? { viewCenter ?? center }
+    /// Half-extent the user has zoomed the view to; nil when it follows the tracking radius.
+    @Published private(set) var viewRadiusKm: Double?
+    /// Radius the panel shows (and queries): the zoomed view, or the tracking radius.
+    var displayRadius: Double { viewRadiusKm ?? settings.radiusKm }
+    /// True after the user has panned or zoomed away from the default view.
+    var isViewAdjusted: Bool { viewCenter != nil || viewRadiusKm != nil }
+    static let zoomRange: ClosedRange<Double> = 2...400
     @Published private(set) var selectedID: String?
     @Published private(set) var route: Lookup<FlightRoute>?
     @Published private(set) var airframe: Lookup<AircraftInfo>?
@@ -44,7 +51,11 @@ final class AppModel: ObservableObject {
         self.tracker = tracker
         self.routes = routes
 
-        settings.$radiusKm.removeDuplicates().sink { [weak self] r in self?.tracker.radiusKm = r }.store(in: &bag)
+        settings.$radiusKm.removeDuplicates().sink { [weak self] r in
+            // A new tracking radius replaces any zoomed view.
+            self?.viewRadiusKm = nil
+            self?.tracker.radiusKm = r
+        }.store(in: &bag)
 
         Publishers.CombineLatest4(location.$coordinate, location.$state, settings.$useManualLocation, settings.$manualLocation)
             .sink { [weak self] coord, state, useManual, manual in
@@ -172,11 +183,20 @@ final class AppModel: ObservableObject {
         if final { tracker.center = c }
     }
 
-    /// Returns the view to the origin (the user's or the manually set location).
+    /// Zooms the view (pinch); aircraft are re-queried for the new extent when the gesture ends.
+    func zoom(to radius: Double, final: Bool) {
+        let r = min(max(radius, Self.zoomRange.lowerBound), Self.zoomRange.upperBound)
+        viewRadiusKm = r
+        if final { tracker.radiusKm = r }
+    }
+
+    /// Returns the view to the origin (the user's or the manually set location) and the default zoom.
     func resetView() {
-        guard viewCenter != nil else { return }
+        guard isViewAdjusted else { return }
         viewCenter = nil
+        viewRadiusKm = nil
         tracker.center = center
+        tracker.radiusKm = settings.radiusKm
     }
 
     func setManualLocation(_ c: Coordinate, name: String) {
@@ -234,6 +254,49 @@ final class AppModel: ObservableObject {
             let result = await Self.probeGCJ()
             self.probing = false
             if let result { self.gcjProbe = result; self.updateDatum() }
+        }
+    }
+
+    /// Searches Apple and OpenStreetMap together: Apple's data on a non-China-region Mac lacks many
+    /// places in mainland China, and OpenStreetMap fills those gaps. Returns WGS-84 results and
+    /// whether both services failed outright.
+    func searchPlaces(_ q: String) async -> (results: [PlaceResult], bothFailed: Bool) {
+        async let apple = appleSearch(q)
+        async let osm: Result<[PlaceResult], Error> = {
+            do { return .success(try await NominatimGeocoder().search(q)) } catch { return .failure(error) }
+        }()
+        let (a, o) = await (apple, osm)
+        let merged = NominatimGeocoder.merge((try? a.get()) ?? [], (try? o.get()) ?? [])
+        // Offline, MapKit tends to report "not found" rather than a network error, so an empty
+        // result with OpenStreetMap unreachable counts as a failed search, not a missing place.
+        var osmFailed = false
+        if case .failure = o { osmFailed = true }
+        return (merged, merged.isEmpty && osmFailed)
+    }
+
+    /// MapKit search. "Nothing found" comes back as an error (MKError.placemarkNotFound); treat it as no results.
+    func appleSearch(_ q: String) async -> Result<[PlaceResult], Error> {
+        let req = MKLocalSearch.Request()
+        req.naturalLanguageQuery = q
+        req.resultTypes = [.address, .pointOfInterest]
+        do {
+            let items = try await MKLocalSearch(request: req).start().mapItems.prefix(5)
+            var out: [PlaceResult] = []
+            for item in items {
+                var c = Coordinate(latitude: item.placemark.coordinate.latitude, longitude: item.placemark.coordinate.longitude)
+                // MapKit search returns coordinates in the datum of the map it serves.
+                if ChinaCoordinate.isInMainlandChina(c), await mapKitServesGCJ() {
+                    c = ChinaCoordinate.gcj02ToWgs84(c)
+                }
+                let detail = [item.placemark.locality, item.placemark.administrativeArea, item.placemark.country]
+                    .compactMap { $0 }.joined(separator: ", ")
+                out.append(PlaceResult(name: item.name ?? q, detail: detail, coordinate: c, source: "Apple"))
+            }
+            return .success(out)
+        } catch let e as MKError where e.code == .placemarkNotFound {
+            return .success([])
+        } catch {
+            return .failure(error)
         }
     }
 

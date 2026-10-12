@@ -27,7 +27,7 @@ struct PanelView: View {
             let s = max(0.7, min(side / 400, 1.6))
             let look = model.settings.mapLook
             let palette = look == .satellite ? Palette.dark : Palette.of(scheme)
-            let radius = model.settings.radiusKm
+            let radius = model.displayRadius
             ZStack(alignment: .topLeading) {
                 palette.ground
 
@@ -51,7 +51,7 @@ struct PanelView: View {
                 if let center = model.center, let view = model.displayCenter {
                     let mapCenter = model.mapCoordinate(center)
                     let projector = projector(model.mapCoordinate(view), side: side)
-                    RangeRings(projector: projector, center: mapCenter, radiusKm: radius, palette: palette, s: s)
+                    RangeRings(projector: projector, center: mapCenter, radiusKm: model.settings.radiusKm, palette: palette, s: s)
                         .allowsHitTesting(false)
                     UserDot(palette: palette, s: s)
                         .position(projector.point(mapCenter))
@@ -85,7 +85,7 @@ struct PanelView: View {
 
     private func requestTerrain(side: CGFloat) {
         guard model.settings.mapLook == .paper, let c = model.displayCenter else { return }
-        model.terrain.request(center: c, radiusKm: model.settings.radiusKm,
+        model.terrain.request(center: c, radiusKm: model.displayRadius,
                               pixels: Int(side * max(displayScale, 1)), dark: scheme == .dark)
     }
 
@@ -93,7 +93,7 @@ struct PanelView: View {
     private func pan(by delta: CGSize, ended: Bool, side: CGFloat) {
         guard let start = panBase ?? model.displayCenter else { return }
         if panBase == nil { panBase = start }
-        let metersPerPoint = model.settings.radiusKm * 1000 / Projector.ringFraction * 2 / Double(side)
+        let metersPerPoint = model.displayRadius * 1000 / Projector.ringFraction * 2 / Double(side)
         let east = -Double(delta.width) * metersPerPoint
         let north = -Double(delta.height) * metersPerPoint
         let lat = start.latitude + north / 111_320
@@ -104,7 +104,7 @@ struct PanelView: View {
 
     /// The paper map is drawn exactly where we ask; Apple's map reports its actual visible rect.
     private func projector(_ center: Coordinate, side: CGFloat) -> Projector {
-        let asked = Projector.rect(center: center, radiusKm: model.settings.radiusKm)
+        let asked = Projector.rect(center: center, radiusKm: model.displayRadius)
         let rect = model.settings.mapLook == .paper ? asked : (visibleRect ?? asked)
         return Projector(rect: rect, side: side)
     }
