@@ -130,6 +130,8 @@ struct PanelChrome: View {
         case .waitingForLocation: return ("正在定位…", false)
         case .live: break
         }
+        if let p = tracker.wideProgress { return ("正在分块查询大范围航班（\(p.done + 1)/\(p.total)）", false) }
+        if tracker.partialCoverage { return ("部分区域数据获取失败，稍后重试", true) }
         if model.settings.mapLook == .paper && terrain.image == nil && !terrain.loading {
             return ("地形数据暂不可用", true)
         }

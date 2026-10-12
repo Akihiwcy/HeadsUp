@@ -50,6 +50,13 @@ public final class FlightTracker: ObservableObject {
     @Published public private(set) var rawCount = 0
     /// Aircraft inside the radius before the airline/flight filter.
     @Published public private(set) var rawInRadius = 0
+    /// For wide views queried in several pieces: true when some pieces failed this round.
+    @Published public private(set) var partialCoverage = false
+    /// Pieces done and total while a wide view is being queried; nil otherwise.
+    @Published public private(set) var wideProgress: (done: Int, total: Int)?
+
+    /// The feeds answer within a circle of about 250 NM (463 km); wider views are queried piecewise.
+    public static let maxSingleQueryKm = 450.0
 
     public var center: Coordinate? {
         didSet {
@@ -83,6 +90,7 @@ public final class FlightTracker: ObservableObject {
     private var latest: [Aircraft] = []
     private var loop: Task<Void, Never>?
     private var failures = 0
+    private var lastSweep: (center: Coordinate, radius: Double)?
     private var cooldowns: [String: (until: Date, strikes: Int)] = [:]
     private var pathMonitor: NWPathMonitor?
     private var networkAvailable = true
@@ -126,6 +134,9 @@ public final class FlightTracker: ObservableObject {
         }
         // Keep showing the last error while retrying, rather than flipping back to "loading".
         if lastSuccess == nil && failures == 0 { status = .loading }
+        let plan = Self.queryPlan(center: center, radiusKm: radiusKm)
+        if plan.count > 1 { return await pollWide(center: center, plan: plan) }
+        partialCoverage = false
         var firstError: FeedError?
         for feed in feedsInOrder() {
             do {
@@ -150,6 +161,87 @@ public final class FlightTracker: ObservableObject {
         }
         fail(firstError ?? .network("未知错误"))
         return min(60, pollInterval * pow(2, Double(min(failures, 4)) - 1))
+    }
+
+    /// Centers of query circles (radius `maxSingleQueryKm`) that together cover the disk of
+    /// `radiusKm` around `center`: points of a hexagonal lattice whose circles reach the disk.
+    public static func queryPlan(center: Coordinate, radiusKm: Double) -> [Coordinate] {
+        let r = maxSingleQueryKm
+        guard radiusKm > r else { return [center] }
+        // A hexagonal lattice with spacing √3·r leaves no point farther than r from a center;
+        // a little tighter for overlap.
+        let spacing = 3.0.squareRoot() * r * 0.95
+        let rings = Int(((radiusKm + r) / spacing).rounded(.up)) + 1
+        var out = [center]
+        for j in -rings...rings {
+            for i in -rings...rings where !(i == 0 && j == 0) {
+                let x = spacing * (Double(i) + Double(j) / 2)
+                let y = spacing * Double(j) * 3.0.squareRoot() / 2
+                let d = (x * x + y * y).squareRoot()
+                guard d - r < radiusKm else { continue }
+                let bearing = atan2(x, y) * 180 / .pi
+                out.append(Geo.destination(from: center, bearing: bearing, meters: d * 1000))
+            }
+        }
+        return out
+    }
+
+    /// Queries a wide view piece by piece, spreading requests across feeds to respect rate limits.
+    private func pollWide(center: Coordinate, plan: [Coordinate]) async -> TimeInterval {
+        var merged: [String: Aircraft] = [:]
+        var failed = 0
+        var firstError: FeedError?
+        var used = Set<String>()
+        defer { wideProgress = nil }
+        // First sweep of a new area: show pieces as they arrive rather than waiting for all of them.
+        let firstSweep = lastSweep.map { Geo.distance($0.center, center) > 1000 || abs($0.radius - radiusKm) > 1 } ?? true
+        for (i, point) in plan.enumerated() {
+            wideProgress = (i, plan.count)
+            let feeds = feedsInOrder()
+            guard !feeds.isEmpty else { break }
+            // Start with this piece's feed; if it fails, give the other feed one try.
+            let order = Array(feeds[(i % feeds.count)...] + feeds[..<(i % feeds.count)])
+            var got = false
+            for feed in order.prefix(2) {
+                do {
+                    let list = try await feed.fetch(center: point, radiusKm: Self.maxSingleQueryKm)
+                    used.insert(feed.name)
+                    cooldowns[feed.name] = nil
+                    for a in list where (merged[a.hex]?.positionTime ?? .distantPast) < a.positionTime { merged[a.hex] = a }
+                    got = true
+                    break
+                } catch is CancellationError {
+                    return pollInterval
+                } catch let e as FeedError {
+                    log.notice("\(feed.name, privacy: .public) failed: \(e.localizedDescription, privacy: .public)")
+                    coolDown(feed.name, after: e)
+                    if firstError == nil { firstError = e }
+                } catch {
+                    if firstError == nil { firstError = .network(error.localizedDescription) }
+                }
+                if Task.isCancelled { return pollInterval }
+            }
+            if !got { failed += 1 }
+            if got && firstSweep && i % 3 == 2,
+               self.center.map({ Geo.distance($0, center) < 1000 }) ?? false {
+                ingest(Array(merged.values))
+            }
+            if Task.isCancelled { return pollInterval }
+            // About one request per second per feed.
+            try? await Task.sleep(nanoseconds: UInt64(1.1 / Double(max(1, feeds.count)) * 1_000_000_000))
+            if Task.isCancelled { return pollInterval }
+        }
+        if failed == plan.count {
+            fail(firstError ?? .network("未知错误"))
+            return min(60, pollInterval * pow(2, Double(min(failures, 4)) - 1))
+        }
+        guard self.center.map({ Geo.distance($0, center) < 1000 }) ?? false else { return 0.1 }
+        lastSweep = (center, radiusKm)
+        activeFeedName = used.sorted().joined(separator: " + ")
+        partialCoverage = failed > 0
+        ingest(Array(merged.values))
+        // A full sweep takes a while; don't start the next one straight away.
+        return max(pollInterval, Double(plan.count) * 1.2)
     }
 
     /// Feeds not resting after an error, in preference order. If every feed is resting,

@@ -25,9 +25,11 @@ final class AppModel: ObservableObject {
     @Published private(set) var viewRadiusKm: Double?
     /// Radius the panel shows (and queries): the zoomed view, or the tracking radius.
     var displayRadius: Double { viewRadiusKm ?? settings.radiusKm }
+    /// True while a pinch or drag is moving the view.
+    @Published private(set) var isInteracting = false
     /// True after the user has panned or zoomed away from the default view.
     var isViewAdjusted: Bool { viewCenter != nil || viewRadiusKm != nil }
-    static let zoomRange: ClosedRange<Double> = 2...400
+    static let zoomRange: ClosedRange<Double> = 2...1200
     @Published private(set) var selectedID: String?
     @Published private(set) var route: Lookup<FlightRoute>?
     @Published private(set) var airframe: Lookup<AircraftInfo>?
@@ -180,6 +182,7 @@ final class AppModel: ObservableObject {
     /// Moves the view while dragging; aircraft are re-queried for the new area when the drag ends.
     func pan(to c: Coordinate, final: Bool) {
         viewCenter = c
+        isInteracting = !final
         if final { tracker.center = c }
     }
 
@@ -187,6 +190,7 @@ final class AppModel: ObservableObject {
     func zoom(to radius: Double, final: Bool) {
         let r = min(max(radius, Self.zoomRange.lowerBound), Self.zoomRange.upperBound)
         viewRadiusKm = r
+        isInteracting = !final
         if final { tracker.radiusKm = r }
     }
 

@@ -28,6 +28,8 @@ struct PanelView: View {
             let look = model.settings.mapLook
             let palette = look == .satellite ? Palette.dark : Palette.of(scheme)
             let radius = model.displayRadius
+            let viewProjector = model.displayCenter.map { projector(model.mapCoordinate($0), side: side) }
+            let smp = viewProjector.map { sample(projector: $0, side: side, s: s) }
             ZStack(alignment: .topLeading) {
                 palette.ground
 
@@ -48,27 +50,23 @@ struct PanelView: View {
                                panEnabled: model.settings.mapDragEnabled,
                                onPan: { delta, ended in pan(by: delta, ended: ended, side: side) })
 
-                if let center = model.center, let view = model.displayCenter {
+                if let center = model.center, let projector = viewProjector, let smp {
                     let mapCenter = model.mapCoordinate(center)
-                    let projector = projector(model.mapCoordinate(view), side: side)
                     RangeRings(projector: projector, center: mapCenter, radiusKm: model.settings.radiusKm, palette: palette, s: s)
                         .allowsHitTesting(false)
                     UserDot(palette: palette, s: s)
                         .position(projector.point(mapCenter))
                         .allowsHitTesting(false)
                     AircraftLayer(model: model, tracker: model.tracker, projector: projector, palette: palette, s: s, side: side,
-                                  sample: sample(projector: projector, side: side, s: s))
+                                  sample: smp)
                 }
 
                 PanelChrome(model: model, tracker: model.tracker, terrain: model.terrain, palette: palette, s: s, side: side,
-                            sampledCount: model.displayCenter.map { v -> Int? in
-                                let smp = sample(projector: projector(model.mapCoordinate(v), side: side), side: side, s: s)
-                                return smp.isSampling ? smp.drawn.count : nil
-                            } ?? nil,
+                            sampledCount: smp.flatMap { $0.isSampling ? $0.drawn.count : nil },
                             hovering: hovering, actions: actions)
 
-                if let view = model.displayCenter {
-                    SelectionCardLayer(model: model, tracker: model.tracker, projector: projector(model.mapCoordinate(view), side: side),
+                if let projector = viewProjector {
+                    SelectionCardLayer(model: model, tracker: model.tracker, projector: projector,
                                        palette: palette, s: s, side: side)
                 }
             }
@@ -77,7 +75,7 @@ struct PanelView: View {
             .environment(\.colorScheme, look == .satellite ? .dark : scheme)
             .onHover { hovering = $0 }
             .onAppear { requestTerrain(side: side) }
-            .onChange(of: TerrainTrigger(center: model.displayCenter, radius: radius, side: side, dark: scheme == .dark, look: look)) { _, _ in
+            .onChange(of: TerrainTrigger(center: model.displayCenter, radius: radius, interacting: model.isInteracting, side: side, dark: scheme == .dark, look: look)) { _, _ in
                 requestTerrain(side: side)
             }
             .onChange(of: look) { _, _ in visibleRect = nil }
@@ -85,11 +83,13 @@ struct PanelView: View {
     }
 
     private struct TerrainTrigger: Equatable {
-        var center: Coordinate?, radius: Double, side: CGFloat, dark: Bool, look: MapLook
+        var center: Coordinate?, radius: Double, interacting: Bool, side: CGFloat, dark: Bool, look: MapLook
     }
 
     private func requestTerrain(side: CGFloat) {
-        guard model.settings.mapLook == .paper, let c = model.displayCenter else { return }
+        // While a pinch or drag is under way the current map image is just moved and scaled;
+        // the terrain is recomputed once, when the gesture ends.
+        guard model.settings.mapLook == .paper, !model.isInteracting, let c = model.displayCenter else { return }
         model.terrain.request(center: c, radiusKm: model.displayRadius,
                               pixels: Int(side * max(displayScale, 1)), dark: scheme == .dark)
     }
@@ -108,7 +108,7 @@ struct PanelView: View {
     }
 
     private func sample(projector: Projector, side: CGFloat, s: CGFloat) -> AircraftSample {
-        AircraftSampler.sample(model.tracker.aircraft, origin: model.center, trackingRadiusKm: model.settings.radiusKm,
+        AircraftSampler.sample(model.tracker.aircraft, origin: model.center,
                                projector: projector, mapCoordinate: model.mapCoordinate, side: side, s: s,
                                selectedID: model.selectedID, now: Date())
     }

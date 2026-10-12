@@ -162,18 +162,30 @@ struct AircraftLayer: View {
     private func draw(_ placed: [Placed], _ labeled: [Placed], in ctx: inout GraphicsContext) {
         let dark = scheme == .dark
         // Trails: one continuous dash rhythm along each path, fading toward the oldest point.
+        // Points closer than a point apart are dropped, and each trail is stroked in three fade
+        // bands (one polyline each) instead of segment by segment.
+        let dash: [CGFloat] = [6 * s, 4 * s]
         for p in placed where p.trail.count > 1 {
+            var pts: [CGPoint] = [p.trail[0]]
+            for q in p.trail.dropFirst() where hypot(q.x - pts.last!.x, q.y - pts.last!.y) >= 1 { pts.append(q) }
+            if let last = p.trail.last, pts.last != last { pts.append(last) }
+            guard pts.count > 1 else { continue }
+            let n = pts.count
+            let bands = min(3, n - 1)
             var travelled: CGFloat = 0
-            let n = p.trail.count
-            for i in 1..<n {
-                let a = p.trail[i - 1], b = p.trail[i]
-                let len = hypot(b.x - a.x, b.y - a.y)
-                guard len > 0.01 else { continue }
-                var seg = Path()
-                seg.move(to: a)
-                seg.addLine(to: b)
-                ctx.stroke(seg, with: .color(palette.ink.opacity(0.75 * Double(i) / Double(n) * p.opacity)),
-                           style: StrokeStyle(lineWidth: 1.5 * s, lineCap: .butt, dash: [6 * s, 4 * s], dashPhase: travelled))
+            for b in 0..<bands {
+                let from = (n - 1) * b / bands, to = (n - 1) * (b + 1) / bands
+                guard to > from else { continue }
+                var path = Path()
+                path.move(to: pts[from])
+                var len: CGFloat = 0
+                for i in (from + 1)...to {
+                    path.addLine(to: pts[i])
+                    len += hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y)
+                }
+                let fade = Double(b + 1) / Double(bands)
+                ctx.stroke(path, with: .color(palette.ink.opacity(0.75 * fade * p.opacity)),
+                           style: StrokeStyle(lineWidth: 1.5 * s, lineCap: .butt, dash: dash, dashPhase: travelled))
                 travelled += len
             }
         }

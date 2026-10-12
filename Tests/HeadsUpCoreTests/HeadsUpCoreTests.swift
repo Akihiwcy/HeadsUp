@@ -204,6 +204,42 @@ final class TrackerTests: XCTestCase {
         XCTAssertLessThan(Geo.distance(later, moved.extrapolatedPosition(at: clock.addingTimeInterval(TrackedAircraft.blendDuration))), 1)
     }
 
+    func testQueryPlanCoversWideViews() {
+        XCTAssertEqual(FlightTracker.queryPlan(center: center, radiusKm: 400).count, 1)
+        let plan = FlightTracker.queryPlan(center: center, radiusKm: 1200)
+        XCTAssertGreaterThan(plan.count, 1)
+        XCTAssertLessThan(plan.count, 30, "few enough requests for free feeds")
+        // Every point of the 1200 km disk lies inside some query circle.
+        for k in 0..<400 {
+            let p = Geo.destination(from: center, bearing: Double(k * 37 % 360), meters: Double(k) / 400 * 1_200_000)
+            XCTAssertTrue(plan.contains { Geo.distance($0, p) <= FlightTracker.maxSingleQueryKm * 1000 }, "uncovered point \(k)")
+        }
+    }
+
+    func testWideViewMergesPieces() async {
+        // Each query returns the same aircraft (overlap) plus one at its own center.
+        final class PieceFeed: FlightFeed, @unchecked Sendable {
+            let name: String
+            var calls = 0
+            let clock: () -> Date
+            init(_ n: String, clock: @escaping () -> Date) { name = n; self.clock = clock }
+            func fetch(center: Coordinate, radiusKm: Double) async throws -> [Aircraft] {
+                calls += 1
+                return [Aircraft(hex: "shared", position: Coordinate(latitude: 37.62, longitude: -122.38), positionTime: clock()),
+                        Aircraft(hex: "p\(name)\(calls)", position: center, positionTime: clock())]
+            }
+        }
+        let a = PieceFeed("a", clock: { [unowned self] in self.clock }), b = PieceFeed("b", clock: { [unowned self] in self.clock })
+        let t = makeTracker([a, b], radius: 1000)
+        let plan = FlightTracker.queryPlan(center: center, radiusKm: 1000)
+        let wait = await t.pollOnce()
+        XCTAssertEqual(a.calls + b.calls, plan.count, "one request per piece")
+        XCTAssertGreaterThan(b.calls, 0, "requests are spread across feeds")
+        XCTAssertEqual(t.rawCount, plan.count + 1, "overlapping results are merged by ICAO address")
+        XCTAssertGreaterThanOrEqual(wait, Double(plan.count))
+        XCTAssertFalse(t.partialCoverage)
+    }
+
     func testAirlineFilter() async {
         let feed = StubFeed("a", .success([plane("u", km: 3, callsign: "UAL1577"), plane("s", km: 4, callsign: "SWA920"),
                                            plane("n", km: 5, callsign: nil)]))

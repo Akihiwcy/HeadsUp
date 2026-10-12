@@ -78,6 +78,27 @@ final class TestControl {
             // Compares the configured route service with adsbdb for up to N airborne aircraft in view.
             let n = Int(arg) ?? 8
             Task { await routeCheck(limit: n) }
+        case "zoomsweep":
+            // "zoomsweep FROM TO STEPS": changes the zoom 60 times a second, like a pinch.
+            let f = arg.split(separator: " ").compactMap { Double($0) }
+            guard f.count == 3 else { break }
+            var i = 0.0
+            let t0 = Date()
+            Timer.scheduledTimer(withTimeInterval: 1.0 / 60, repeats: true) { timer in
+                MainActor.assumeIsolated {
+                    i += 1
+                    let r = f[0] + (f[1] - f[0]) * i / f[2]
+                    model.zoom(to: r, final: i >= f[2])
+                    if i >= f[2] {
+                        timer.invalidate()
+                        let ms = Date().timeIntervalSince(t0) * 1000
+                        try? "steps=\(Int(f[2])) elapsedMs=\(Int(ms)) expectedMs=\(Int(f[2] / 60 * 1000))".write(toFile: "/tmp/headsup-sweep.txt", atomically: true, encoding: .utf8)
+                    }
+                }
+            }
+        case "unpause":
+            // The display may be asleep during unattended tests; keep polling anyway.
+            model.tracker.isPaused = false
         case "zoom":
             if let r = Double(arg) { model.zoom(to: r, final: true) }
         case "size":
