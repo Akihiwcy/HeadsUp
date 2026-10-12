@@ -136,7 +136,10 @@ struct SettingsView: View {
                         Text("\(Int(sideDraft)) pt").monospacedDigit().frame(width: 56, alignment: .trailing)
                     }
                 }
-                Text("拖动面板空白处可移动位置，鼠标悬停时拖动右下角可调整大小。")
+                Text("拖动面板空白处可移动位置（允许拖动地图时改为按住 ⌘ 拖动），鼠标悬停时拖动右下角可调整大小。")
+                    .font(.caption).foregroundStyle(.secondary)
+                Toggle("允许拖动地图查看其他区域", isOn: $settings.mapDragEnabled)
+                Text("开启后拖动地图空白处可平移，飞机按当前看到的区域查询；原点和距离圈不动，点右上角的定位按钮回到原点。此时按住 ⌘ 拖动可移动面板。")
                     .font(.caption).foregroundStyle(.secondary)
                 Toggle("登录时自动启动", isOn: Binding(get: { loginItem }, set: setLoginItem))
                 if let loginError { Text(loginError).foregroundStyle(.red).font(.callout) }

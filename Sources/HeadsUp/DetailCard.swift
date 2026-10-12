@@ -78,6 +78,10 @@ struct DetailCard: View {
 
     @ViewBuilder private var routeRow: some View {
         switch model.route {
+        case .found(let r)? where !routePlausible(r):
+            // The database's route for this callsign contradicts where the aircraft is; don't show it.
+            placeholder("航线未知（航线库记录与当前位置不符）")
+                .help("adsbdb 记录：\(r.origin.code) → \(r.destination.code)")
         case .found(let r)?:
             VStack(alignment: .leading, spacing: 3 * s) {
                 HStack(alignment: .center, spacing: 8 * s) {
@@ -96,11 +100,6 @@ struct DetailCard: View {
                     .frame(minWidth: 24)
                     airport(r.destination, alignment: .trailing)
                 }
-                if !r.isPlausible(for: a.position, track: a.trackDeg, verticalRateFpm: a.onGround ? nil : a.verticalRateFpm) {
-                    Text("航线库记录与当前位置不符，可能已过时")
-                        .font(.system(size: 9.5 * s, weight: .medium).width(.condensed))
-                        .foregroundStyle(palette.danger)
-                }
             }
         case .loading?:
             placeholder("正在查询航线…")
@@ -109,6 +108,10 @@ struct DetailCard: View {
         default:
             placeholder(a.callsign == nil ? "未广播航班号，无法查询航线" : "航线信息暂缺")
         }
+    }
+
+    private func routePlausible(_ r: FlightRoute) -> Bool {
+        r.isPlausible(for: a.position, track: a.trackDeg, verticalRateFpm: a.onGround ? nil : a.verticalRateFpm)
     }
 
     private func airport(_ ap: Airport, alignment: HorizontalAlignment) -> some View {
@@ -216,7 +219,7 @@ struct DetailCard: View {
         var parts = ["ICAO \(a.hex.uppercased())", "\(age) 秒前定位"]
         if let sq = a.squawk { parts.append("应答机 \(sq)") }
         if let feed = model.tracker.activeFeedName { parts.append("数据 \(feed)") }
-        if case .found? = model.route { parts.append("航线 adsbdb") }
+        if case .found(let r)? = model.route, routePlausible(r) { parts.append("航线 adsbdb") }
         return parts.joined(separator: " · ")
     }
 }

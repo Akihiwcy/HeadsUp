@@ -62,6 +62,14 @@ struct PanelChrome: View {
                     .allowsHitTesting(false)
             }
 
+            if model.viewCenter != nil {
+                roundButton("location.fill", help: "回到原点", action: model.resetView)
+                    .padding(.trailing, side * 0.06 + (hovering ? 64 * s : 0))
+                    .padding(.top, side * 0.055)
+                    .frame(width: side, height: side, alignment: .topTrailing)
+                    .animation(.easeInOut(duration: 0.15), value: hovering)
+            }
+
             if hovering {
                 HStack(spacing: 6) {
                     roundButton("gearshape", help: "设置", action: actions.openSettings)
@@ -99,7 +107,8 @@ struct PanelChrome: View {
         let r = Format.km(model.settings.radiusKm)
         if model.center == nil { return "\(r) 公里范围" }
         if tracker.lastSuccess == nil { return "— 架 · \(r) 公里内" }
-        return "\(n) 架 · \(r) 公里内" + (tracker.filter == nil ? "" : " · 已过滤")
+        let scope = model.viewCenter == nil ? "\(r) 公里内" : "视图中心 \(r) 公里内"
+        return "\(n) 架 · \(scope)" + (tracker.filter == nil ? "" : " · 已过滤")
     }
 
     private var statusText: (text: String, warn: Bool)? {
@@ -196,22 +205,28 @@ struct PanelChrome: View {
 struct WindowDragArea: NSViewRepresentable {
     var onClick: () -> Void
     var menu: () -> NSMenu?
+    /// When true, a plain drag pans the map and ⌘-drag moves the panel.
+    var panEnabled = false
+    var onPan: (CGSize, Bool) -> Void = { _, _ in }
 
     func makeNSView(context: Context) -> DragView {
         let v = DragView()
-        v.onClick = onClick
-        v.menuProvider = menu
+        updateNSView(v, context: context)
         return v
     }
 
     func updateNSView(_ v: DragView, context: Context) {
         v.onClick = onClick
         v.menuProvider = menu
+        v.panEnabled = panEnabled
+        v.onPan = onPan
     }
 
     final class DragView: NSView {
         var onClick: (() -> Void)?
         var menuProvider: (() -> NSMenu?)?
+        var panEnabled = false
+        var onPan: ((CGSize, Bool) -> Void)?
 
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
@@ -220,12 +235,20 @@ struct WindowDragArea: NSViewRepresentable {
             let start = NSEvent.mouseLocation
             let origin = window.frame.origin
             var moved = false
+            let panning = panEnabled && !event.modifierFlags.contains(.command)
             while let e = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
                 let now = NSEvent.mouseLocation
-                if e.type == .leftMouseUp { break }
-                if abs(now.x - start.x) + abs(now.y - start.y) > 3 { moved = true }
-                if moved {
-                    window.setFrameOrigin(NSPoint(x: origin.x + now.x - start.x, y: origin.y + now.y - start.y))
+                let delta = CGSize(width: now.x - start.x, height: now.y - start.y)
+                if e.type == .leftMouseUp {
+                    if moved && panning { onPan?(delta, true) }
+                    break
+                }
+                if abs(delta.width) + abs(delta.height) > 3 { moved = true }
+                guard moved else { continue }
+                if panning {
+                    onPan?(delta, false)
+                } else {
+                    window.setFrameOrigin(NSPoint(x: origin.x + delta.width, y: origin.y + delta.height))
                 }
             }
             if !moved { onClick?() }

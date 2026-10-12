@@ -19,6 +19,7 @@ struct PanelView: View {
     @Environment(\.displayScale) private var displayScale
     @State private var visibleRect: MKMapRect?
     @State private var hovering = false
+    @State private var panBase: Coordinate?
 
     var body: some View {
         GeometryReader { geo in
@@ -30,24 +31,26 @@ struct PanelView: View {
             ZStack(alignment: .topLeading) {
                 palette.ground
 
-                if let center = model.center {
-                    let mapCenter = model.mapCoordinate(center)
+                if let view = model.displayCenter {
+                    let viewMap = model.mapCoordinate(view)
                     if look == .paper {
-                        TerrainLayer(terrain: model.terrain, projector: projector(mapCenter, side: side))
+                        TerrainLayer(terrain: model.terrain, projector: projector(viewMap, side: side))
                             .allowsHitTesting(false)
                     } else {
-                        MapLayer(center: mapCenter, radiusKm: radius, look: look, visibleRect: $visibleRect)
+                        MapLayer(center: viewMap, radiusKm: radius, look: look, visibleRect: $visibleRect)
                             // Keep Apple's logo and legal link clear of the rounded corners.
                             .safeAreaPadding(EdgeInsets(top: 0, leading: side * 0.075, bottom: side * 0.045, trailing: side * 0.075))
                             .allowsHitTesting(false)
                     }
                 }
 
-                WindowDragArea(onClick: { model.select(nil) }, menu: actions.contextMenu)
+                WindowDragArea(onClick: { model.select(nil) }, menu: actions.contextMenu,
+                               panEnabled: model.settings.mapDragEnabled,
+                               onPan: { delta, ended in pan(by: delta, ended: ended, side: side) })
 
-                if let center = model.center {
+                if let center = model.center, let view = model.displayCenter {
                     let mapCenter = model.mapCoordinate(center)
-                    let projector = projector(mapCenter, side: side)
+                    let projector = projector(model.mapCoordinate(view), side: side)
                     RangeRings(projector: projector, center: mapCenter, radiusKm: radius, palette: palette, s: s)
                         .allowsHitTesting(false)
                     UserDot(palette: palette, s: s)
@@ -59,8 +62,8 @@ struct PanelView: View {
                 PanelChrome(model: model, tracker: model.tracker, terrain: model.terrain, palette: palette, s: s, side: side,
                             hovering: hovering, actions: actions)
 
-                if let center = model.center {
-                    SelectionCardLayer(model: model, tracker: model.tracker, projector: projector(model.mapCoordinate(center), side: side),
+                if let view = model.displayCenter {
+                    SelectionCardLayer(model: model, tracker: model.tracker, projector: projector(model.mapCoordinate(view), side: side),
                                        palette: palette, s: s, side: side)
                 }
             }
@@ -69,7 +72,7 @@ struct PanelView: View {
             .environment(\.colorScheme, look == .satellite ? .dark : scheme)
             .onHover { hovering = $0 }
             .onAppear { requestTerrain(side: side) }
-            .onChange(of: TerrainTrigger(center: model.center, radius: radius, side: side, dark: scheme == .dark, look: look)) { _, _ in
+            .onChange(of: TerrainTrigger(center: model.displayCenter, radius: radius, side: side, dark: scheme == .dark, look: look)) { _, _ in
                 requestTerrain(side: side)
             }
             .onChange(of: look) { _, _ in visibleRect = nil }
@@ -81,9 +84,22 @@ struct PanelView: View {
     }
 
     private func requestTerrain(side: CGFloat) {
-        guard model.settings.mapLook == .paper, let c = model.center else { return }
+        guard model.settings.mapLook == .paper, let c = model.displayCenter else { return }
         model.terrain.request(center: c, radiusKm: model.settings.radiusKm,
                               pixels: Int(side * max(displayScale, 1)), dark: scheme == .dark)
+    }
+
+    /// Drag delta (screen points, y up) → new view center. Content follows the pointer.
+    private func pan(by delta: CGSize, ended: Bool, side: CGFloat) {
+        guard let start = panBase ?? model.displayCenter else { return }
+        if panBase == nil { panBase = start }
+        let metersPerPoint = model.settings.radiusKm * 1000 / Projector.ringFraction * 2 / Double(side)
+        let east = -Double(delta.width) * metersPerPoint
+        let north = -Double(delta.height) * metersPerPoint
+        let lat = start.latitude + north / 111_320
+        let lon = start.longitude + east / (111_320 * cos(start.latitude * .pi / 180))
+        model.pan(to: Coordinate(latitude: max(-80, min(80, lat)), longitude: lon), final: ended)
+        if ended { panBase = nil }
     }
 
     /// The paper map is drawn exactly where we ask; Apple's map reports its actual visible rect.

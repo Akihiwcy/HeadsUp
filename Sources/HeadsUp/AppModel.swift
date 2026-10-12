@@ -16,6 +16,11 @@ final class AppModel: ObservableObject {
 
     @Published private(set) var center: Coordinate?
     @Published private(set) var centerSource: CenterSource = .none
+    /// Where the user has panned the view to; nil when the view sits on the origin.
+    @Published private(set) var viewCenter: Coordinate?
+
+    /// The middle of what the panel shows: the panned view, or the origin.
+    var displayCenter: Coordinate? { viewCenter ?? center }
     @Published private(set) var selectedID: String?
     @Published private(set) var route: Lookup<FlightRoute>?
     @Published private(set) var airframe: Lookup<AircraftInfo>?
@@ -55,6 +60,7 @@ final class AppModel: ObservableObject {
         // Forward nested changes so views observing the model redraw.
         tracker.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }.store(in: &bag)
         settings.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }.store(in: &bag)
+        settings.$mapDragEnabled.sink { [weak self] on in if !on { self?.resetView() } }.store(in: &bag)
         location.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }.store(in: &bag)
 
         tracker.$aircraft.sink { [weak self] list in
@@ -116,6 +122,19 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Moves the view while dragging; aircraft are re-queried for the new area when the drag ends.
+    func pan(to c: Coordinate, final: Bool) {
+        viewCenter = c
+        if final { tracker.center = c }
+    }
+
+    /// Returns the view to the origin (the user's or the manually set location).
+    func resetView() {
+        guard viewCenter != nil else { return }
+        viewCenter = nil
+        tracker.center = center
+    }
+
     func setManualLocation(_ c: Coordinate, name: String) {
         settings.manualLocation = c
         settings.manualLocationName = name
@@ -147,7 +166,7 @@ final class AppModel: ObservableObject {
         centerSource = source
         if next != center {
             center = next
-            tracker.center = next
+            tracker.center = viewCenter ?? next
         }
         updateDatum()
     }

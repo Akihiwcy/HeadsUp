@@ -27,6 +27,8 @@ public final class SettingsStore: ObservableObject {
     @Published public var filterEnabled: Bool { didSet { defaults.set(filterEnabled, forKey: Keys.filterOn) } }
     /// Airline codes and flight numbers, comma separated, e.g. "UAL, MU5101".
     @Published public var filterText: String { didSet { defaults.set(filterText, forKey: Keys.filterText) } }
+    /// Whether dragging the map pans the view (the origin stays put).
+    @Published public var mapDragEnabled: Bool { didSet { defaults.set(mapDragEnabled, forKey: Keys.mapDrag) } }
     /// Panel frame as x, y (bottom-left, screen points) and side length.
     @Published public var panelFrame: [Double]? { didSet { defaults.set(panelFrame, forKey: Keys.panelFrame) } }
     /// Last position CoreLocation gave us, used to start quickly on the next launch.
@@ -36,7 +38,7 @@ public final class SettingsStore: ObservableObject {
         static let radius = "radiusKm", appearance = "appearance", level = "panelLevel", mapLook = "mapLook"
         static let labels = "showLabels", useManual = "useManualLocation", manual = "manualLocation"
         static let manualName = "manualLocationName", lastKnown = "lastKnownLocation"
-        static let filterOn = "filterEnabled", filterText = "filterText", panelFrame = "panelFrame"
+        static let filterOn = "filterEnabled", filterText = "filterText", panelFrame = "panelFrame", mapDrag = "mapDragEnabled"
     }
 
     public init(defaults: UserDefaults = .standard) {
@@ -53,6 +55,7 @@ public final class SettingsStore: ObservableObject {
         lastKnownLocation = Self.load(defaults, Keys.lastKnown)
         filterEnabled = defaults.bool(forKey: Keys.filterOn)
         filterText = defaults.string(forKey: Keys.filterText) ?? ""
+        mapDragEnabled = defaults.bool(forKey: Keys.mapDrag)
         let f = defaults.array(forKey: Keys.panelFrame) as? [Double]
         panelFrame = (f?.count == 3 && f!.allSatisfy(\.isFinite)) ? f : nil
     }

@@ -49,9 +49,14 @@ struct MapLayer: View {
                 position = .rect(Projector.rect(center: center, radiusKm: radiusKm))
                 didAppear = true
             }
-            .onChange(of: Key(center: center, radius: radiusKm)) { _, key in
+            .onChange(of: Key(center: center, radius: radiusKm)) { old, key in
                 let target = Projector.rect(center: key.center, radiusKm: key.radius)
-                withAnimation(.easeInOut(duration: 0.7)) { position = .rect(target) }
+                // Animate zoom changes; follow pans immediately so the map stays under the pointer.
+                if old.radius != key.radius {
+                    withAnimation(.easeInOut(duration: 0.7)) { position = .rect(target) }
+                } else {
+                    position = .rect(target)
+                }
             }
     }
 
