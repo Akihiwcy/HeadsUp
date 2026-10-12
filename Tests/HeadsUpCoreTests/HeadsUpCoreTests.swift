@@ -407,3 +407,110 @@ final class VectorTileTests: XCTestCase {
         XCTAssertLessThan(Double(data[px]) / 255, 0.6, "pixel on the river line is blue, not paper")
     }
 }
+
+// MARK: - Live route services
+
+final class StubURLProtocol: URLProtocol {
+    nonisolated(unsafe) static var handler: ((URLRequest) -> (Int, String))?
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        let (code, body) = Self.handler?(request) ?? (500, "")
+        let resp = HTTPURLResponse(url: request.url!, statusCode: code, httpVersion: nil, headerFields: nil)!
+        client?.urlProtocol(self, didReceive: resp, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(body.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+
+    static func session() -> URLSession {
+        let c = URLSessionConfiguration.ephemeral
+        c.protocolClasses = [StubURLProtocol.self]
+        return URLSession(configuration: c)
+    }
+}
+
+final class LiveRouteTests: XCTestCase {
+    let now = ISO8601DateFormatter().date(from: "2026-10-12T04:00:00Z")!
+
+    let aero = """
+    {"flights":[
+     {"ident":"UAL737","scheduled_out":"2026-10-12T09:00:00Z","actual_off":null,"actual_on":null,
+      "origin":{"code":"KSFO","code_iata":"SFO","code_icao":"KSFO","name":"San Francisco Intl","city":"San Francisco"},
+      "destination":{"code":"KEWR","code_iata":"EWR","code_icao":"KEWR","name":"Newark Liberty Intl","city":"Newark"}},
+     {"ident":"UAL737","scheduled_out":"2026-10-12T02:30:00Z","actual_off":"2026-10-12T02:45:00Z","actual_on":null,
+      "origin":{"code":"KORD","code_iata":"ORD","code_icao":"KORD","name":"Chicago O'Hare","city":"Chicago"},
+      "destination":{"code":"KSFO","code_iata":"SFO","code_icao":"KSFO","name":"San Francisco Intl","city":"San Francisco"}},
+     {"ident":"UAL737","scheduled_out":"2026-10-11T20:00:00Z","actual_off":"2026-10-11T20:10:00Z","actual_on":"2026-10-12T01:00:00Z",
+      "origin":{"code":"KEWR","code_iata":"EWR","code_icao":"KEWR"},"destination":{"code":"KORD","code_iata":"ORD","code_icao":"KORD"}}
+    ]}
+    """
+
+    func testAeroAPIPicksFlightInTheAir() throws {
+        let obj = try JSONSerialization.jsonObject(with: Data(aero.utf8)) as! [String: Any]
+        let r = try XCTUnwrap(LiveRouteClient.parseAeroAPI(obj, onGround: false, now: now))
+        XCTAssertEqual(r.origin.code, "ORD")
+        XCTAssertEqual(r.destination.code, "SFO")
+        XCTAssertTrue(r.verified)
+        XCTAssertEqual(r.source, "FlightAware")
+        // A verified route is shown even where the corridor heuristic would doubt it.
+        XCTAssertTrue(r.isPlausible(for: Coordinate(latitude: 0, longitude: 0)))
+    }
+
+    func testAeroAPIOnGroundPicksNearestInTime() throws {
+        // The only in-air leg is ignored for an aircraft on the ground; the 09:00 departure is 5 h away,
+        // the 01:00 arrival 3 h ago, so neither qualifies.
+        let obj = try JSONSerialization.jsonObject(with: Data(aero.utf8)) as! [String: Any]
+        XCTAssertNil(LiveRouteClient.parseAeroAPI(obj, onGround: true, now: now))
+        let later = now.addingTimeInterval(3 * 3600)   // 07:00: the 09:00 departure is next
+        XCTAssertEqual(LiveRouteClient.parseAeroAPI(obj, onGround: true, now: later)?.origin.code, "SFO")
+    }
+
+    func testAirLabsParsingAndErrors() throws {
+        let ok = #"{"response":{"flight_icao":"UAL737","dep_iata":"ORD","dep_icao":"KORD","arr_iata":"SFO","arr_icao":"KSFO","airline_name":"United Airlines"}}"#
+        let r = try XCTUnwrap(LiveRouteClient.parseAirLabs(try JSONSerialization.jsonObject(with: Data(ok.utf8)) as! [String: Any]))
+        XCTAssertEqual(r.origin.code, "ORD")
+        XCTAssertEqual(r.airline, "United Airlines")
+        let bad = #"{"error":{"message":"Unknown api_key","code":"unknown_api_key"}}"#
+        XCTAssertThrowsError(try LiveRouteClient.parseAirLabs(try JSONSerialization.jsonObject(with: Data(bad.utf8)) as! [String: Any]))
+        XCTAssertNil(try LiveRouteClient.parseAirLabs(["response": [String: Any]()]))
+    }
+
+    func testServiceFallsBackToDatabaseWhenKeyIsRejected() async {
+        let adsbdb = """
+        {"response":{"flightroute":{"airline":{"name":"United Airlines"},
+         "origin":{"iata_code":"ORD","icao_code":"KORD","latitude":41.97,"longitude":-87.9},
+         "destination":{"iata_code":"SFO","icao_code":"KSFO","latitude":37.62,"longitude":-122.38}}}}
+        """
+        StubURLProtocol.handler = { req in
+            if req.url!.host == "live.test" { return (401, #"{"title":"Unauthorized"}"#) }
+            return (200, adsbdb)
+        }
+        let session = StubURLProtocol.session()
+        let svc = RouteService(session: session, base: "https://db.test")
+        await svc.setLiveProvider(LiveRouteClient(kind: .flightAware, key: "bad", session: session, base: "https://live.test"))
+        let r = await svc.route(callsign: "UAL737", onGround: false)
+        guard case .found(let route) = r else { return XCTFail("expected database route") }
+        XCTAssertEqual(route.source, "adsbdb")
+        let err = await svc.liveError
+        XCTAssertEqual(err, .unauthorized)
+    }
+
+    func testServiceUsesLiveRoute() async {
+        let aeroBody = aero
+        StubURLProtocol.handler = { req in
+            if req.url!.host == "live.test" {
+                XCTAssertEqual(req.value(forHTTPHeaderField: "x-apikey"), "k")
+                return (200, aeroBody)
+            }
+            return (500, "")
+        }
+        let session = StubURLProtocol.session()
+        let svc = RouteService(session: session, base: "https://db.test")
+        await svc.setLiveProvider(LiveRouteClient(kind: .flightAware, key: "k", session: session, base: "https://live.test"))
+        let r = await svc.route(callsign: "UAL737", onGround: false)
+        guard case .found(let route) = r else { return XCTFail("expected live route") }
+        XCTAssertEqual(route.source, "FlightAware")
+        XCTAssertEqual(route.origin.code, "ORD")
+    }
+}

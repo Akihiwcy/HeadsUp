@@ -27,6 +27,8 @@ public final class SettingsStore: ObservableObject {
     @Published public var filterEnabled: Bool { didSet { defaults.set(filterEnabled, forKey: Keys.filterOn) } }
     /// Airline codes and flight numbers, comma separated, e.g. "UAL, MU5101".
     @Published public var filterText: String { didSet { defaults.set(filterText, forKey: Keys.filterText) } }
+    /// Optional flight-status service for routes; its API key lives in the Keychain, not here.
+    @Published public var routeProvider: RouteProviderKind { didSet { defaults.set(routeProvider.rawValue, forKey: Keys.routeProvider) } }
     /// Whether dragging the map pans the view (the origin stays put).
     @Published public var mapDragEnabled: Bool { didSet { defaults.set(mapDragEnabled, forKey: Keys.mapDrag) } }
     /// Panel frame as x, y (bottom-left, screen points) and side length.
@@ -38,7 +40,7 @@ public final class SettingsStore: ObservableObject {
         static let radius = "radiusKm", appearance = "appearance", level = "panelLevel", mapLook = "mapLook"
         static let labels = "showLabels", useManual = "useManualLocation", manual = "manualLocation"
         static let manualName = "manualLocationName", lastKnown = "lastKnownLocation"
-        static let filterOn = "filterEnabled", filterText = "filterText", panelFrame = "panelFrame", mapDrag = "mapDragEnabled"
+        static let filterOn = "filterEnabled", filterText = "filterText", panelFrame = "panelFrame", mapDrag = "mapDragEnabled", routeProvider = "routeProvider"
     }
 
     public init(defaults: UserDefaults = .standard) {
@@ -56,6 +58,7 @@ public final class SettingsStore: ObservableObject {
         filterEnabled = defaults.bool(forKey: Keys.filterOn)
         filterText = defaults.string(forKey: Keys.filterText) ?? ""
         mapDragEnabled = defaults.bool(forKey: Keys.mapDrag)
+        routeProvider = RouteProviderKind(rawValue: defaults.string(forKey: Keys.routeProvider) ?? "") ?? .none
         let f = defaults.array(forKey: Keys.panelFrame) as? [Double]
         panelFrame = (f?.count == 3 && f!.allSatisfy(\.isFinite)) ? f : nil
     }

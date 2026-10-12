@@ -27,6 +27,8 @@ final class AppModel: ObservableObject {
     /// Whether the Apple base map under the current center is drawn in GCJ-02.
     @Published private(set) var mapIsGCJ = false
     /// What the current filter text resolved to, for the settings window.
+    /// Error from the flight-status route service on the last lookup, shown in settings.
+    @Published private(set) var liveRouteError: LiveRouteError?
     @Published private(set) var filterSummary = ""
     @Published private(set) var filterProblems: [String] = []
     private var iataCache: [String: [String]] = [:]
@@ -60,6 +62,7 @@ final class AppModel: ObservableObject {
         // Forward nested changes so views observing the model redraw.
         tracker.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }.store(in: &bag)
         settings.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }.store(in: &bag)
+        settings.$routeProvider.sink { [weak self] kind in self?.applyRouteProvider(kind) }.store(in: &bag)
         settings.$mapDragEnabled.sink { [weak self] on in if !on { self?.resetView() } }.store(in: &bag)
         location.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }.store(in: &bag)
 
@@ -83,7 +86,8 @@ final class AppModel: ObservableObject {
         if let cs = a.callsign {
             route = .loading
             Task {
-                let r = await routes.route(callsign: cs)
+                let r = await routes.route(callsign: cs, onGround: a.onGround)
+                self.liveRouteError = await routes.liveError
                 if self.selectedID == id { self.route = r }
             }
         } else {
@@ -119,6 +123,46 @@ final class AppModel: ObservableObject {
             let active = enabled && !built.filter.tokens.isEmpty
             tracker.filter = active ? built.filter : nil
             if let id = selectedID, !tracker.aircraft.contains(where: { $0.id == id }) { select(nil) }
+        }
+    }
+
+    /// Account name under which each service's key is kept in the Keychain.
+    static func keychainAccount(_ kind: RouteProviderKind) -> String { kind.rawValue }
+
+    func routeKey(for kind: RouteProviderKind) -> String { Keychain.get(Self.keychainAccount(kind)) ?? "" }
+
+    func setRouteKey(_ key: String, for kind: RouteProviderKind) {
+        Keychain.set(key.trimmingCharacters(in: .whitespacesAndNewlines), for: Self.keychainAccount(kind))
+        applyRouteProvider(settings.routeProvider)
+    }
+
+    private func applyRouteProvider(_ kind: RouteProviderKind) {
+        let key = kind == .none ? "" : routeKey(for: kind)
+        let env = ProcessInfo.processInfo.environment["HEADSUP_ROUTE_LIVE_BASE"]
+        let client = key.isEmpty ? nil : LiveRouteClient(kind: kind, key: key, base: env)
+        liveRouteError = nil
+        Task { await routes.setLiveProvider(client) }
+    }
+
+    /// Tries the configured service on one aircraft in view; returns a line for the settings window.
+    func testRouteService() async -> String {
+        let kind = settings.routeProvider
+        let key = routeKey(for: kind)
+        guard kind != .none, !key.isEmpty else { return "请先选择服务并填写 API Key" }
+        guard let a = tracker.aircraft.first(where: { !$0.aircraft.onGround && $0.aircraft.callsign != nil })?.aircraft
+                ?? tracker.aircraft.first(where: { $0.aircraft.callsign != nil })?.aircraft, let cs = a.callsign else {
+            return "附近暂时没有带航班号的飞机可以测试"
+        }
+        let client = LiveRouteClient(kind: kind, key: key, base: ProcessInfo.processInfo.environment["HEADSUP_ROUTE_LIVE_BASE"])
+        do {
+            if let r = try await client.route(callsign: cs, onGround: a.onGround) {
+                return "成功：\(cs) \(r.origin.code) → \(r.destination.code)"
+            }
+            return "Key 可用，但服务里没有 \(cs) 当前航班的记录"
+        } catch let e as LiveRouteError {
+            return "失败：\(e.localizedDescription)"
+        } catch {
+            return "失败：\(error.localizedDescription)"
         }
     }
 

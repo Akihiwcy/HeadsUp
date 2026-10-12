@@ -219,7 +219,7 @@ struct DetailCard: View {
         var parts = ["ICAO \(a.hex.uppercased())", "\(age) 秒前定位"]
         if let sq = a.squawk { parts.append("应答机 \(sq)") }
         if let feed = model.tracker.activeFeedName { parts.append("数据 \(feed)") }
-        if case .found(let r)? = model.route, routePlausible(r) { parts.append("航线 adsbdb") }
+        if case .found(let r)? = model.route, routePlausible(r) { parts.append("航线 \(r.source)") }
         return parts.joined(separator: " · ")
     }
 }

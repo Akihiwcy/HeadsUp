@@ -14,10 +14,23 @@ public struct FlightRoute: Equatable, Sendable {
     public var airline: String?
     public var origin: Airport
     public var destination: Airport
+    /// Where the route came from, for the card's footer.
+    public var source: String = "adsbdb"
+    /// True when a flight-status service reported it for today's flight (not a callsign database guess).
+    public var verified = false
+
+    public init(airline: String?, origin: Airport, destination: Airport, source: String = "adsbdb", verified: Bool = false) {
+        self.airline = airline
+        self.origin = origin
+        self.destination = destination
+        self.source = source
+        self.verified = verified
+    }
 
     /// adsbdb's routes are keyed by callsign and can be stale. Treat a route as doubtful when the
     /// aircraft is far from the great-circle path between the two airports.
     public func isPlausible(for position: Coordinate, track: Double? = nil, verticalRateFpm: Int? = nil) -> Bool {
+        if verified { return true }
         guard let o = origin.position, let d = destination.position else { return true }
         let direct = Geo.distance(o, d)
         let via = Geo.distance(o, position) + Geo.distance(position, d)
@@ -57,10 +70,44 @@ public actor RouteService {
     private var routes: [String: Lookup<FlightRoute>] = [:]
     private var airframes: [String: Lookup<AircraftInfo>] = [:]
     private var iataAirlines: [String: [String]] = [:]
+    private var live: LiveRouteClient?
+    private var liveRoutes: [String: (route: FlightRoute?, at: Date)] = [:]
+    /// The last error from the flight-status service, if its most recent lookup failed.
+    public private(set) var liveError: LiveRouteError?
 
     public init(session: URLSession = .shared, base: String = "https://api.adsbdb.com") {
         self.session = session
         self.base = base
+    }
+
+    /// Uses a flight-status service (with the user's key) before the callsign database; nil turns it off.
+    public func setLiveProvider(_ client: LiveRouteClient?) {
+        live = client
+        liveRoutes = [:]
+        liveError = nil
+    }
+
+    /// Route for the flight now operating as `callsign`: the flight-status service if configured,
+    /// else (or if it has nothing) adsbdb.
+    public func route(callsign: String, onGround: Bool) async -> Lookup<FlightRoute> {
+        if let live {
+            let key = callsign.uppercased() + (onGround ? "/g" : "/a")
+            if let hit = liveRoutes[key], Date().timeIntervalSince(hit.at) < 20 * 60 {
+                if let r = hit.route { return .found(r) }
+            } else {
+                do {
+                    let r = try await live.route(callsign: callsign, onGround: onGround)
+                    liveRoutes[key] = (r, Date())
+                    liveError = nil
+                    if let r { return .found(r) }
+                } catch let e as LiveRouteError {
+                    liveError = e
+                } catch {
+                    liveError = .network(error.localizedDescription)
+                }
+            }
+        }
+        return await route(callsign: callsign)
     }
 
     public func route(callsign: String) async -> Lookup<FlightRoute> {

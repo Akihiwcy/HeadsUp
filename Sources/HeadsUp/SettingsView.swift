@@ -20,6 +20,8 @@ struct SettingsView: View {
     @State private var searchError: String?
     @State private var loginItem = SMAppService.mainApp.status == .enabled
     @State private var loginError: String?
+    @State private var routeKeyDraft = ""
+    @State private var routeTestResult: String?
 
     struct SearchResult: Identifiable {
         let id = UUID()
@@ -63,6 +65,33 @@ struct SettingsView: View {
                 ForEach(model.filterProblems, id: \.self) { p in
                     Text(p).font(.callout).foregroundStyle(.orange)
                 }
+            }
+
+            Section("航线数据") {
+                Picker("航线来源", selection: $settings.routeProvider) {
+                    Text("免费航线库（adsbdb，可能不准）").tag(RouteProviderKind.none)
+                    Text("FlightAware AeroAPI").tag(RouteProviderKind.flightAware)
+                    Text("AirLabs").tag(RouteProviderKind.airLabs)
+                }
+                if settings.routeProvider != .none {
+                    HStack {
+                        SecureField("API Key", text: $routeKeyDraft, prompt: Text("粘贴 \(settings.routeProvider.displayName) 的 API Key"))
+                        Button("保存") {
+                            model.setRouteKey(routeKeyDraft, for: settings.routeProvider)
+                            routeTestResult = "已保存到钥匙串"
+                        }
+                        Button("测试") {
+                            model.setRouteKey(routeKeyDraft, for: settings.routeProvider)
+                            routeTestResult = "测试中…"
+                            Task { routeTestResult = await model.testRouteService() }
+                        }
+                        .disabled(routeKeyDraft.isEmpty)
+                    }
+                    if let r = routeTestResult { Text(r).font(.callout).foregroundStyle(.secondary) }
+                    if let e = model.liveRouteError { Text("最近一次查询失败：\(e.localizedDescription)，已改用免费航线库").font(.callout).foregroundStyle(.orange) }
+                }
+                Text("飞机信号里没有航线。免费航线库按航班号记录，经常对不上；接入航班状态服务后，详情里显示的是今天这一班的真实起降机场。只在点开飞机时查询，结果缓存 20 分钟。Key 只保存在本机钥匙串。")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
             Section("位置") {
@@ -160,6 +189,11 @@ struct SettingsView: View {
             radiusDraft = settings.radiusKm
             sideDraft = Double(panelSide())
             loginItem = SMAppService.mainApp.status == .enabled
+            routeKeyDraft = model.routeKey(for: settings.routeProvider)
+        }
+        .onChange(of: settings.routeProvider) { _, kind in
+            routeKeyDraft = model.routeKey(for: kind)
+            routeTestResult = nil
         }
         .onReceive(settings.$radiusKm) { radiusDraft = $0 }
     }

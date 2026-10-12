@@ -56,6 +56,13 @@ final class TestControl {
             // In-app mouse click at panel-local (top-left origin) point, routed through the window.
             let f = arg.split(separator: " ").compactMap { Double($0) }
             if f.count == 2 { tap(CGPoint(x: f[0], y: f[1]), right: verb == "rtap") }
+        case "routekey":
+            // "routekey flightAware KEY" (empty KEY clears it)
+            let f = arg.split(separator: " ", maxSplits: 1).map(String.init)
+            if let kind = RouteProviderKind(rawValue: f.first ?? "") {
+                model.settings.routeProvider = kind
+                model.setRouteKey(f.count > 1 ? f[1] : "", for: kind)
+            }
         case "size":
             if let s = Double(arg) { app.panel.setSide(s) }
         case "move":
@@ -125,6 +132,9 @@ final class TestControl {
             "selected": m.selectedID ?? NSNull(),
             "filterActive": t.filter != nil,
             "menu": lastMenuTitles,
+            "routeProvider": m.settings.routeProvider.rawValue,
+            "hasRouteKey": !m.routeKey(for: m.settings.routeProvider).isEmpty,
+            "liveRouteError": m.liveRouteError?.localizedDescription ?? NSNull(),
             "filterSummary": m.filterSummary,
             "filterProblems": m.filterProblems,
             "rawInRadius": t.rawInRadius,
