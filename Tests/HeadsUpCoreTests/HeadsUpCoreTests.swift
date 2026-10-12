@@ -142,15 +142,53 @@ final class TrackerTests: XCTestCase {
         let a = StubFeed("a", .failure(.rateLimited))
         let b = StubFeed("b", .success([plane("x", km: 5)]))
         let t = makeTracker([a, b])
-        await t.pollOnce()
-        await t.pollOnce()
+        for _ in 0..<4 { await t.pollOnce() }
         XCTAssertEqual(a.calls, 1, "rate-limited feed is skipped during its cool-down")
-        XCTAssertEqual(b.calls, 2)
+        XCTAssertEqual(b.calls, 4)
+        XCTAssertEqual(t.status, .live, "the other feed kept the sky live")
         clock = clock.addingTimeInterval(31)
         a.result = .success([])
-        await t.pollOnce()
+        for _ in 0..<2 { await t.pollOnce() }
         XCTAssertEqual(a.calls, 2, "tried again after the cool-down")
-        XCTAssertEqual(t.activeFeedName, "a")
+    }
+
+    func testFeedsTakeTurns() async {
+        let a = StubFeed("a", .success([plane("x", km: 5)]))
+        let b = StubFeed("b", .success([plane("x", km: 5)]))
+        let t = makeTracker([a, b])
+        for _ in 0..<6 { await t.pollOnce() }
+        XCTAssertEqual(a.calls, 3)
+        XCTAssertEqual(b.calls, 3)
+    }
+
+    func testBrieflyMissingAircraftDoNotBlink() async {
+        let feed = StubFeed("a", .success([plane("x", km: 5), plane("y", km: 6)]))
+        let t = makeTracker([feed])
+        await t.pollOnce()
+        clock = clock.addingTimeInterval(5)
+        var x = plane("x", km: 5)
+        x.positionTime = clock
+        feed.result = .success([x])          // y missing from this one report
+        await t.pollOnce()
+        XCTAssertEqual(Set(t.aircraft.map(\.id)), ["x", "y"], "y is kept for a short while")
+        clock = clock.addingTimeInterval(30)
+        x.positionTime = clock
+        feed.result = .success([x])
+        await t.pollOnce()
+        XCTAssertEqual(t.aircraft.map(\.id), ["x"], "y goes once it has been missing too long")
+    }
+
+    func testShortRateLimitIsQuiet() async {
+        let feed = StubFeed("a", .success([plane("x", km: 5)]))
+        let t = makeTracker([feed])
+        await t.pollOnce()
+        feed.result = .failure(.rateLimited)
+        clock = clock.addingTimeInterval(10)
+        await t.pollOnce()
+        XCTAssertEqual(t.status, .live, "a refused request right after good data is retried quietly")
+        clock = clock.addingTimeInterval(60)
+        await t.pollOnce()
+        XCTAssertEqual(t.status, .error("数据服务限流，稍后重试"), "reported once the data is getting old")
     }
 
     func testErrorStatesAndStaleClearing() async {

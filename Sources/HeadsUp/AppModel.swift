@@ -13,6 +13,7 @@ final class AppModel: ObservableObject {
     let tracker: FlightTracker
     let routes: RouteService
     let terrain = TerrainModel()
+    let sampleMemory = SampleMemory()
 
     @Published private(set) var center: Coordinate?
     @Published private(set) var centerSource: CenterSource = .none

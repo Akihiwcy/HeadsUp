@@ -107,10 +107,22 @@ struct PanelView: View {
         if ended { panBase = nil }
     }
 
+    /// Test switch (HEADSUP_SAMPLER_NO_STICKY=1) to compare against the old, non-sticky sampling.
+    static let stickySampling = ProcessInfo.processInfo.environment["HEADSUP_SAMPLER_NO_STICKY"] == nil
+
     private func sample(projector: Projector, side: CGFloat, s: CGFloat) -> AircraftSample {
-        AircraftSampler.sample(model.tracker.aircraft, origin: model.center,
-                               projector: projector, mapCoordinate: model.mapCoordinate, side: side, s: s,
-                               selectedID: model.selectedID, now: Date())
+        let memory = model.sampleMemory
+        let result = AircraftSampler.sample(model.tracker.aircraft, origin: model.center,
+                                            projector: projector, mapCoordinate: model.mapCoordinate, side: side, s: s,
+                                            selectedID: model.selectedID, now: Date(),
+                                            keep: Self.stickySampling ? memory.drawn : [])
+        let drawn = Set(result.drawn.map(\.id))
+        if result.isSampling || !memory.drawn.isEmpty {
+            memory.churn += drawn.symmetricDifference(memory.drawn).count
+            memory.samples += 1
+        }
+        memory.drawn = result.isSampling ? drawn : []
+        return result
     }
 
     /// The paper map is drawn exactly where we ask; Apple's map reports its actual visible rect.

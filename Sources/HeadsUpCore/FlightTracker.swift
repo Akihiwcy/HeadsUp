@@ -55,6 +55,17 @@ public final class FlightTracker: ObservableObject {
     /// Pieces done and total while a wide view is being queried; nil otherwise.
     @Published public private(set) var wideProgress: (done: Int, total: Int)?
 
+    /// Wider views move slowly on screen (dead reckoning fills in between reports), so they are
+    /// polled less often, which also keeps the free feeds' rate limits at bay.
+    var adaptiveInterval: TimeInterval {
+        radiusKm <= 50 ? pollInterval : (radiusKm <= 200 ? pollInterval * 1.6 : pollInterval * 2)
+    }
+
+    /// How long an aircraft absent from the latest report is kept (moving by dead reckoning).
+    public static let missingGrace: TimeInterval = 25
+    /// Rate-limit or server errors within this long of the last good report are retried quietly.
+    public static let quietErrorWindow: TimeInterval = 30
+
     /// The feeds answer within a circle of about 250 NM (463 km); wider views are queried piecewise.
     public static let maxSingleQueryKm = 450.0
 
@@ -90,6 +101,7 @@ public final class FlightTracker: ObservableObject {
     private var latest: [Aircraft] = []
     private var loop: Task<Void, Never>?
     private var failures = 0
+    private var rotation = 0
     private var lastSweep: (center: Coordinate, radius: Double)?
     private var cooldowns: [String: (until: Date, strikes: Int)] = [:]
     private var pathMonitor: NWPathMonitor?
@@ -135,6 +147,7 @@ public final class FlightTracker: ObservableObject {
         // Keep showing the last error while retrying, rather than flipping back to "loading".
         if lastSuccess == nil && failures == 0 { status = .loading }
         let plan = Self.queryPlan(center: center, radiusKm: radiusKm)
+        rotation += 1
         if plan.count > 1 { return await pollWide(center: center, plan: plan) }
         partialCoverage = false
         var firstError: FeedError?
@@ -147,7 +160,7 @@ public final class FlightTracker: ObservableObject {
                 guard self.center.map({ Geo.distance($0, center) < 1000 }) ?? false else { return 0.1 }
                 activeFeedName = feed.name
                 ingest(list)
-                return pollInterval
+                return adaptiveInterval
             } catch is CancellationError {
                 return pollInterval
             } catch let e as FeedError {
@@ -249,7 +262,11 @@ public final class FlightTracker: ObservableObject {
     func feedsInOrder() -> [FlightFeed] {
         let t = now()
         let ready = feeds.filter { (cooldowns[$0.name]?.until ?? .distantPast) <= t }
-        if !ready.isEmpty { return ready }
+        // Take turns as the first choice, so each community feed sees half the requests.
+        if !ready.isEmpty {
+            let k = rotation % ready.count
+            return Array(ready[k...] + ready[..<k])
+        }
         return feeds.min { (cooldowns[$0.name]?.until ?? .distantPast) < (cooldowns[$1.name]?.until ?? .distantPast) }.map { [$0] } ?? []
     }
 
@@ -275,13 +292,21 @@ public final class FlightTracker: ObservableObject {
         lastSuccess = t
         status = .live
         rawCount = list.count
-        latest = list.filter { t.timeIntervalSince($0.positionTime) < staleAfter }
+        let fresh = list.filter { t.timeIntervalSince($0.positionTime) < staleAfter }
+        // An aircraft missing from one report (the other feed doesn't hear it, or its signal
+        // dropped for a moment) stays for a short while instead of blinking out and back.
+        let ids = Set(fresh.map(\.hex))
+        let carried = latest.filter { !ids.contains($0.hex) && t.timeIntervalSince($0.positionTime) < Self.missingGrace }
+        latest = fresh + carried
         refilter()
         emptyStreak = rawInRadius == 0 ? emptyStreak + 1 : 0
     }
 
     private func fail(_ error: FeedError) {
         failures += 1
+        // A busy community feed refusing one request isn't worth an alarm while the sky on screen
+        // is still fresh: keep showing it and retry. Offline is always reported.
+        if error != .offline, let last = lastSuccess, now().timeIntervalSince(last) < Self.quietErrorWindow { return }
         status = error == .offline ? .offline : .error(error.errorDescription ?? "错误")
         if let last = lastSuccess, now().timeIntervalSince(last) > staleAfter {
             latest = []

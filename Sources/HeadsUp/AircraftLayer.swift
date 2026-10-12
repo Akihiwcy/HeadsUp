@@ -100,8 +100,13 @@ struct AircraftLayer: View {
         let size = CGSize(width: Self.labelSize.width * s, height: Self.labelSize.height * s)
         var taken: [CGRect] = []
         var out: [Placed] = []
+        let memory = model.sampleMemory
+        let sticky = PanelView.stickySampling ? memory.labels : [:]
+        var placedSides: [String: Int] = [:]
         let ordered = placed.sorted { a, b in
             if (a.item.id == model.selectedID) != (b.item.id == model.selectedID) { return a.item.id == model.selectedID }
+            // Labels shown last frame keep their place, so they don't hop between aircraft.
+            if (sticky[a.item.id] != nil) != (sticky[b.item.id] != nil) { return sticky[a.item.id] != nil }
             // Airborne traffic first: a busy apron shouldn't use up every label.
             if a.item.aircraft.onGround != b.item.aircraft.onGround { return !a.item.aircraft.onGround }
             return a.item.distanceMeters < b.item.distanceMeters
@@ -125,16 +130,29 @@ struct AircraftLayer: View {
                 (CGRect(x: p.point.x - o - size.width, y: p.point.y - o - size.height, width: size.width, height: size.height), false, true),
                 (CGRect(x: p.point.x - o - size.width, y: p.point.y + o * 0.5, width: size.width, height: size.height), false, false),
             ]
-            let fit = candidates.first { c in
-                bounds.contains(c.0) && !taken.contains { $0.intersects(c.0) } && !marks.contains { $0.intersects(c.0) }
-            } ?? (isSelected ? candidates.first { bounds.contains($0.0) } ?? candidates[0] : nil)
-            guard let (r, leading, above) = fit else { continue }
+            // A label that was already showing tries its old side first and tolerates an aircraft
+            // drifting under it; a new one needs a completely clear spot.
+            let previous = sticky[p.item.id]
+            let order = previous.map { [$0] + (0..<4).filter { $0 != previous } } ?? Array(0..<4)
+            let fitIndex = order.first { i in
+                let c = candidates[i].0
+                guard bounds.contains(c), !taken.contains(where: { $0.intersects(c) }) else { return false }
+                return previous != nil || !marks.contains { $0.intersects(c) }
+            } ?? (isSelected ? (candidates.indices.first { bounds.contains(candidates[$0].0) } ?? 0) : nil)
+            guard let fi = fitIndex else { continue }
+            let (r, leading, above) = candidates[fi]
+            placedSides[p.item.id] = fi
             taken.append(r)
             p.labelRect = r
             p.labelLeading = leading
             p.labelAbove = above
             out.append(p)
         }
+        if !memory.labels.isEmpty || !placedSides.isEmpty {
+            memory.labelChurn += Set(placedSides.keys).symmetricDifference(memory.labels.keys).count
+            memory.labelFrames += 1
+        }
+        memory.labels = placedSides
         return out
     }
 
