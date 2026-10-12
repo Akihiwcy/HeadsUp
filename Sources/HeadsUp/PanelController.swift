@@ -4,8 +4,11 @@ import HeadsUpCore
 import SwiftUI
 
 final class HeadsUpPanel: NSPanel {
-    // Never take keyboard focus from the app the user is working in.
-    override var canBecomeKey: Bool { false }
+    /// Off by default, so the panel never takes focus from the app you're working in. With map
+    /// dragging and zooming on, a click on the panel focuses it, because macOS only delivers
+    /// trackpad pinches to the active app.
+    var acceptsKey = false
+    override var canBecomeKey: Bool { acceptsKey }
     override var canBecomeMain: Bool { false }
 }
 
@@ -58,17 +61,17 @@ final class PanelController: NSObject, NSWindowDelegate {
         // Trackpad pinch over the panel zooms the map. A local monitor sees the gesture wherever the
         // pointer is in the panel, before SwiftUI's hosting view can swallow it.
         zoomMonitor = NSEvent.addLocalMonitorForEvents(matching: .magnify) { [weak self] event in
-            if ProcessInfo.processInfo.environment["HEADSUP_TEST_CONTROL"] == "1" {
-                FileHandle.standardError.write("magnify window=\(String(describing: event.window?.windowNumber)) loc=\(event.locationInWindow) mag=\(event.magnification) phase=\(event.phase.rawValue)\n".data(using: .utf8)!)
-            }
+            TestLog.write("magnify window=\(String(describing: event.window?.windowNumber)) panelNo=\(self?.panel.windowNumber ?? -1) mouse=\(NSEvent.mouseLocation) panel=\(self?.panel.frame ?? .zero) phase=\(event.phase.rawValue) mag=\(event.magnification)")
             guard let self, self.model.settings.mapDragEnabled,
                   event.window === self.panel || (event.window == nil && self.panel.frame.contains(NSEvent.mouseLocation))
             else { return event }
             let ended = event.phase.contains(.ended) || event.phase.contains(.cancelled)
+            TestLog.write("zoom accepted r=\(self.model.displayRadius)")
             self.model.zoom(to: self.model.displayRadius / max(0.2, 1 + event.magnification), final: ended)
             return nil
         }
 
+        model.settings.$mapDragEnabled.sink { [weak self] on in self?.panel.acceptsKey = on }.store(in: &bag)
         model.settings.$panelLevel.sink { [weak self] in self?.apply(level: $0) }.store(in: &bag)
         model.settings.$appearance.sink { [weak self] in self?.apply(appearance: $0) }.store(in: &bag)
     }

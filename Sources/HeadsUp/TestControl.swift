@@ -99,6 +99,11 @@ final class TestControl {
         case "unpause":
             // The display may be asleep during unattended tests; keep polling anyway.
             model.tracker.isPaused = false
+        case "simdrag":
+            // "simdrag x y dx dy": a drag on the panel starting at panel-local (x, y), moving the real
+            // cursor (CGWarp) and feeding drag events, ending with mouse-up.
+            let f = arg.split(separator: " ").compactMap { Double($0) }
+            if f.count == 4 { simDrag(from: CGPoint(x: f[0], y: f[1]), by: CGSize(width: f[2], height: f[3])) }
         case "zoom":
             if let r = Double(arg) { model.zoom(to: r, final: true) }
         case "size":
@@ -132,6 +137,33 @@ final class TestControl {
     }
 
     private var pinchLog: [String] = []
+
+    private func simDrag(from p: CGPoint, by d: CGSize) {
+        let w = app.panel.panel
+        let screenH = NSScreen.screens.first?.frame.height ?? 0
+        func global(_ q: CGPoint) -> CGPoint { CGPoint(x: w.frame.minX + q.x, y: screenH - (w.frame.maxY - q.y)) }
+        func ev(_ t: NSEvent.EventType, _ q: CGPoint) -> NSEvent? {
+            NSEvent.mouseEvent(with: t, location: NSPoint(x: q.x, y: w.frame.height - q.y), modifierFlags: [],
+                               timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: w.windowNumber,
+                               context: nil, eventNumber: 0, clickCount: 1, pressure: 1)
+        }
+        CGWarpMouseCursorPosition(global(p))
+        var step = 0
+        let steps = 20
+        let timer = Timer(timeInterval: 0.02, repeats: true) { t in
+            step += 1
+            let q = CGPoint(x: p.x + d.width * Double(step) / Double(steps), y: p.y + d.height * Double(step) / Double(steps))
+            CGWarpMouseCursorPosition(global(q))
+            if step < steps {
+                if let e = ev(.leftMouseDragged, q) { NSApp.postEvent(e, atStart: false) }
+            } else {
+                if let e = ev(.leftMouseUp, q) { NSApp.postEvent(e, atStart: false) }
+                t.invalidate()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        if let down = ev(.leftMouseDown, p) { w.sendEvent(down) }
+    }
 
     private func routeCheck(limit: Int) async {
         let m = app.model!

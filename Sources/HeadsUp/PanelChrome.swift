@@ -230,6 +230,13 @@ struct WindowDragArea: NSViewRepresentable {
 
         override func mouseDown(with event: NSEvent) {
             guard let window else { return }
+            if panEnabled {
+                // Take focus so the trackpad's pinch reaches the panel (macOS sends gestures to the
+                // active app only). Clicking any other app hands focus back as usual.
+                NSApp.activate(ignoringOtherApps: true)
+                window.makeKey()
+                TestLog.write("activated by click active=\(NSApp.isActive) key=\(window.isKeyWindow)")
+            }
             let start = NSEvent.mouseLocation
             let origin = window.frame.origin
             var moved = false
@@ -239,6 +246,7 @@ struct WindowDragArea: NSViewRepresentable {
                 let delta = CGSize(width: now.x - start.x, height: now.y - start.y)
                 if e.type == .leftMouseUp {
                     if moved && panning { onPan?(delta, true) }
+                    TestLog.write("drag up moved=\(moved) panning=\(panning) delta=\(delta)")
                     break
                 }
                 if abs(delta.width) + abs(delta.height) > 3 { moved = true }
@@ -250,6 +258,11 @@ struct WindowDragArea: NSViewRepresentable {
                 }
             }
             if !moved { onClick?() }
+        }
+
+        override func magnify(with event: NSEvent) {
+            TestLog.write("DragView.magnify reached view (monitor did not take it) phase=\(event.phase.rawValue)")
+            super.magnify(with: event)
         }
 
         override func rightMouseDown(with event: NSEvent) {
@@ -286,5 +299,14 @@ struct ResizeGrip: NSViewRepresentable {
                 onResize?(startSide + delta)
             }
         }
+    }
+}
+
+/// Diagnostic lines on stderr, only when started with HEADSUP_TEST_CONTROL=1.
+enum TestLog {
+    static let enabled = ProcessInfo.processInfo.environment["HEADSUP_TEST_CONTROL"] == "1"
+    static func write(_ line: String) {
+        guard enabled else { return }
+        FileHandle.standardError.write("\(Date().timeIntervalSince1970) \(line)\n".data(using: .utf8)!)
     }
 }
