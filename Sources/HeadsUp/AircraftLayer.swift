@@ -14,16 +14,20 @@ struct AircraftLayer: View {
     let palette: Palette
     let s: CGFloat
     let side: CGFloat
+    /// Aircraft to draw in full, and the rest (drawn as faint dots) when zoomed out over a busy sky.
+    let sample: AircraftSample
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
-        let items = tracker.aircraft
-        let paused = items.isEmpty || tracker.isPaused
+        let items = sample.drawn
+        let paused = tracker.aircraft.isEmpty || tracker.isPaused
         ZStack(alignment: .topLeading) {
             TimelineView(.animation(minimumInterval: frameInterval(items), paused: paused)) { tl in
                 let placed = place(items, at: tl.date)
                 let labeled = labels(for: placed)
+                let dots = sample.hidden.map { projector.point(model.mapCoordinate($0.displayPosition(at: tl.date))) }
                 Canvas { ctx, _ in
+                    drawDots(dots, in: &ctx)
                     draw(placed, labeled, in: &ctx)
                 }
                 .allowsHitTesting(false)
@@ -145,6 +149,15 @@ struct AircraftLayer: View {
     }
 
     // MARK: Drawing
+
+    /// Aircraft left out by sampling: small dots, so the density of traffic still reads.
+    private func drawDots(_ dots: [CGPoint], in ctx: inout GraphicsContext) {
+        guard !dots.isEmpty else { return }
+        var path = Path()
+        let r = 1.8 * s
+        for p in dots { path.addEllipse(in: CGRect(x: p.x - r, y: p.y - r, width: r * 2, height: r * 2)) }
+        ctx.fill(path, with: .color(palette.ink.opacity(0.35)))
+    }
 
     private func draw(_ placed: [Placed], _ labeled: [Placed], in ctx: inout GraphicsContext) {
         let dark = scheme == .dark

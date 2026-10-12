@@ -56,10 +56,15 @@ struct PanelView: View {
                     UserDot(palette: palette, s: s)
                         .position(projector.point(mapCenter))
                         .allowsHitTesting(false)
-                    AircraftLayer(model: model, tracker: model.tracker, projector: projector, palette: palette, s: s, side: side)
+                    AircraftLayer(model: model, tracker: model.tracker, projector: projector, palette: palette, s: s, side: side,
+                                  sample: sample(projector: projector, side: side, s: s))
                 }
 
                 PanelChrome(model: model, tracker: model.tracker, terrain: model.terrain, palette: palette, s: s, side: side,
+                            sampledCount: model.displayCenter.map { v -> Int? in
+                                let smp = sample(projector: projector(model.mapCoordinate(v), side: side), side: side, s: s)
+                                return smp.isSampling ? smp.drawn.count : nil
+                            } ?? nil,
                             hovering: hovering, actions: actions)
 
                 if let view = model.displayCenter {
@@ -100,6 +105,12 @@ struct PanelView: View {
         let lon = start.longitude + east / (111_320 * cos(start.latitude * .pi / 180))
         model.pan(to: Coordinate(latitude: max(-80, min(80, lat)), longitude: lon), final: ended)
         if ended { panBase = nil }
+    }
+
+    private func sample(projector: Projector, side: CGFloat, s: CGFloat) -> AircraftSample {
+        AircraftSampler.sample(model.tracker.aircraft, origin: model.center, trackingRadiusKm: model.settings.radiusKm,
+                               projector: projector, mapCoordinate: model.mapCoordinate, side: side, s: s,
+                               selectedID: model.selectedID, now: Date())
     }
 
     /// The paper map is drawn exactly where we ask; Apple's map reports its actual visible rect.

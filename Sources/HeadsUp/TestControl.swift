@@ -78,6 +78,8 @@ final class TestControl {
             // Compares the configured route service with adsbdb for up to N airborne aircraft in view.
             let n = Int(arg) ?? 8
             Task { await routeCheck(limit: n) }
+        case "zoom":
+            if let r = Double(arg) { model.zoom(to: r, final: true) }
         case "size":
             if let s = Double(arg) { app.panel.setSide(s) }
         case "move":

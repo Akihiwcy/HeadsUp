@@ -10,6 +10,8 @@ struct PanelChrome: View {
     let palette: Palette
     let s: CGFloat
     let side: CGFloat
+    /// Number of aircraft drawn in full when sampling is thinning a busy view; nil otherwise.
+    var sampledCount: Int? = nil
     let hovering: Bool
     let actions: PanelActions
     @Environment(\.colorScheme) private var scheme
@@ -108,7 +110,8 @@ struct PanelChrome: View {
         if model.center == nil { return "\(r) 公里范围" }
         if tracker.lastSuccess == nil { return "— 架 · \(r) 公里内" }
         let scope = model.isViewAdjusted ? "视图内 \(Format.km((model.displayRadius).rounded())) 公里" : "\(r) 公里内"
-        return "\(n) 架 · \(scope)" + (tracker.filter == nil ? "" : " · 已过滤")
+        let shown = sampledCount.map { " · 显示 \($0)" } ?? ""
+        return "\(n) 架 · \(scope)" + shown + (tracker.filter == nil ? "" : " · 已过滤")
     }
 
     private var statusText: (text: String, warn: Bool)? {
