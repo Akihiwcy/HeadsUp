@@ -105,7 +105,12 @@ struct AircraftLayer: View {
         let bounds = CGRect(x: 6, y: 6, width: side - 12, height: side - 12)
         // Keep clear of the count/status chips in the top-left corner.
         taken.append(CGRect(x: 0, y: 0, width: side * 0.075 + 190 * s, height: side * 0.065 + 64 * s))
-        let marks = placed.map { CGRect(x: $0.point.x - 11 * s, y: $0.point.y - 11 * s, width: 22 * s, height: 22 * s) }
+        var marks = placed.map { CGRect(x: $0.point.x - 11 * s, y: $0.point.y - 11 * s, width: 22 * s, height: 22 * s) }
+        // Never hide the user's own position under a label.
+        if let c = model.center {
+            let u = projector.point(model.mapCoordinate(c))
+            marks.append(CGRect(x: u.x - 14 * s, y: u.y - 14 * s, width: 28 * s, height: 28 * s))
+        }
         for var p in ordered {
             let isSelected = p.item.id == model.selectedID
             guard isSelected || out.count < maxLabels else { continue }

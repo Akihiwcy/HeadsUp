@@ -343,3 +343,67 @@ final class TerrainTests: XCTestCase {
         XCTAssertEqual(tile.elevations[1234], 100, accuracy: 0.01)
     }
 }
+
+final class VectorTileTests: XCTestCase {
+    func testGeometryCommandsFromSpec() {
+        // Example from the Mapbox Vector Tile spec: a LineString (2,2) → (2,10) → (10,10).
+        let parts = VectorTileDecoder.decodeGeometry([9, 4, 4, 18, 0, 16, 16, 0])
+        XCTAssertEqual(parts.count, 1)
+        XCTAssertEqual(parts[0].map { [$0.0, $0.1] }, [[2, 2], [2, 10], [10, 10]])
+    }
+
+    // Tiny protobuf writer for building test tiles.
+    private func varint(_ v: UInt64) -> [UInt8] {
+        var v = v, out: [UInt8] = []
+        repeat { var b = UInt8(v & 0x7F); v >>= 7; if v != 0 { b |= 0x80 }; out.append(b) } while v != 0
+        return out
+    }
+    private func field(_ n: Int, _ bytes: [UInt8]) -> [UInt8] { varint(UInt64(n << 3 | 2)) + varint(UInt64(bytes.count)) + bytes }
+    private func field(_ n: Int, varint v: UInt64) -> [UInt8] { varint(UInt64(n << 3)) + varint(v) }
+    private func packed(_ vals: [UInt32]) -> [UInt8] { vals.flatMap { varint(UInt64($0)) } }
+    private func str(_ s: String) -> [UInt8] { Array(s.utf8) }
+
+    private func layer(_ name: String, type: UInt64, cls: String, geometry: [UInt32], extra: [(String, String)] = []) -> [UInt8] {
+        var keys = ["class"], vals = [cls]
+        for (k, v) in extra { keys.append(k); vals.append(v) }
+        var tags: [UInt32] = []
+        for i in 0..<keys.count { tags += [UInt32(i), UInt32(i)] }
+        let feature = field(2, packed(tags)) + field(3, varint: type) + field(4, packed(geometry))
+        var l = field(15, varint: 2) + field(1, str(name)) + field(2, feature)
+        for k in keys { l += field(3, str(k)) }
+        for v in vals { l += field(4, field(1, str(v))) }
+        l += field(5, varint: 4096)
+        return field(3, l)
+    }
+
+    func testDecodesWaterLayers() throws {
+        // Square lake 0..2048 in tile 1/0/0, and a river line.
+        let square: [UInt32] = [9, 0, 0, 26, 4096, 0, 0, 4096, 4095, 0, 15]
+        let river: [UInt32] = [9, 200, 200, 10, 400, 400]
+        let tunnel: [UInt32] = [9, 10, 10, 10, 20, 20]
+        let data = Data(layer("boundary", type: 2, cls: "x", geometry: river)
+                        + layer("water", type: 3, cls: "lake", geometry: square)
+                        + layer("water", type: 3, cls: "swimming_pool", geometry: square)
+                        + layer("waterway", type: 2, cls: "river", geometry: river)
+                        + layer("waterway", type: 2, cls: "river", geometry: tunnel, extra: [("brunnel", "tunnel")]))
+        let w = try VectorTileDecoder.decode(data, z: 1, x: 0, y: 0)
+        XCTAssertEqual(w.areas.count, 1, "swimming pools are skipped")
+        XCTAssertEqual(w.lines.count, 1, "tunnels and other layers are skipped")
+        XCTAssertEqual(w.lines[0].kind, .river)
+        XCTAssertEqual(w.lines[0].points[0].x, 100.0 / 4096 / 2, accuracy: 1e-12)
+        XCTAssertEqual(w.areas[0].rings[0][1].x, 0.25, accuracy: 1e-9)   // 2048/4096 of the left half of the world
+    }
+
+    func testRiversAreDrawn() {
+        let n = 64
+        let e = [Float](repeating: 100, count: n * n)
+        let rect = WorldRect(minX: 0, minY: 0, width: 1, height: 1)
+        let w = WaterFeatures(lines: [.init(kind: .river, points: [WorldPoint(x: 0, y: 0.5), WorldPoint(x: 1, y: 0.5)])])
+        let img = TerrainRenderer.render(elevation: e, n: n, pixelScale: 2, rect: rect, style: .light, water: w)!
+        let data = img.dataProvider!.data! as Data
+        let river = TerrainRenderer.Style.light.river
+        let px = (32 * n + 20) * 4
+        XCTAssertEqual(Double(data[px + 2]) / 255, river.b, accuracy: 0.05)
+        XCTAssertLessThan(Double(data[px]) / 255, 0.6, "pixel on the river line is blue, not paper")
+    }
+}

@@ -12,6 +12,7 @@ final class TerrainModel: ObservableObject {
     @Published private(set) var loading = false
 
     private let source: TerrainTileSource
+    private let waterSource = WaterTileSource()
     private var task: Task<Void, Never>?
     private var key: Key?
 
@@ -36,22 +37,31 @@ final class TerrainModel: ObservableObject {
             let rect = WorldRect.around(k.center, halfWidthMeters: k.radiusKm * 1000 / Projector.ringFraction)
             let zoom = TerrainRenderer.zoom(for: rect, pixels: k.pixels)
             let keys = TerrainRenderer.tiles(for: rect, zoom: zoom)
+            let waterKeys = TerrainRenderer.tiles(for: rect, zoom: WaterTileSource.zoom(for: rect))
+            async let waterResult: (WaterFeatures, Int) = withTaskGroup(of: WaterFeatures?.self) { [waterSource] group in
+                for t in waterKeys { group.addTask { await waterSource.tile(t) } }
+                var all = WaterFeatures(), got = 0
+                for await w in group { if let w { all.append(w); got += 1 } }
+                return (all, got)
+            }
             let tiles = await withTaskGroup(of: (TileKey, ElevationTile?).self) { group in
                 for t in keys { group.addTask { (t, await source.tile(t)) } }
                 var out: [TileKey: ElevationTile] = [:]
                 for await (t, tile) in group { if let tile { out[t] = tile } }
                 return out
             }
+            let (water, waterGot) = await waterResult
             if Task.isCancelled { return }
             let style: TerrainRenderer.Style = k.dark ? .dark : .light
             let n = k.pixels
             let img: CGImage? = tiles.isEmpty ? nil : await Task.detached(priority: .utility) {
                 let e = TerrainRenderer.sample(rect: rect, n: n, zoom: zoom, tiles: tiles)
-                return TerrainRenderer.render(elevation: e, n: n, pixelScale: 2, rect: rect, style: style)
+                return TerrainRenderer.render(elevation: e, n: n, pixelScale: 2, rect: rect, style: style,
+                                              water: waterGot > 0 ? water : nil)
             }.value
             if Task.isCancelled { return }
             self.loading = false
-            self.incomplete = tiles.count < keys.count
+            self.incomplete = tiles.count < keys.count || waterGot < waterKeys.count
             if let img {
                 self.image = img
                 self.imageRect = rect

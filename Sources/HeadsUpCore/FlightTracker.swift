@@ -124,7 +124,8 @@ public final class FlightTracker: ObservableObject {
             fail(.offline)
             return pollInterval
         }
-        if lastSuccess == nil && status != .live { status = .loading }
+        // Keep showing the last error while retrying, rather than flipping back to "loading".
+        if lastSuccess == nil && failures == 0 { status = .loading }
         var firstError: FeedError?
         for feed in feedsInOrder() {
             do {

@@ -54,7 +54,7 @@ struct PanelChrome: View {
             }
 
             if model.settings.mapLook == .paper && terrain.image != nil {
-                Text("地形 © Mapzen · AWS Terrain Tiles")
+                Text("地形 © Mapzen · 水系 © OpenStreetMap 贡献者")
                     .font(.system(size: 8 * max(s, 1)).width(.condensed))
                     .foregroundStyle(palette.sub.opacity(0.75))
                     .padding(.bottom, side * 0.03)

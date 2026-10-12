@@ -131,6 +131,7 @@ public enum TerrainRenderer {
         public var majorLine: RGBA, minorLine: RGBA
         public var shadow: RGBA, highlight: RGBA
         public var grid: RGBA
+        public var river: RGBA = RGBA(0x5B97BD)
 
         public static let light = Style(
             paperLow: RGBA(0xF0ECE3), paperHigh: RGBA(0xFFFFFF),
@@ -144,7 +145,7 @@ public enum TerrainRenderer {
             water: RGBA(0x0E2536), shore: RGBA(0x5B93B8, 0.8),
             majorLine: RGBA(0xE8DCC8, 0.42), minorLine: RGBA(0xE8DCC8, 0.14),
             shadow: RGBA(0x000000, 0.62), highlight: RGBA(0xFFFFFF, 0.08),
-            grid: RGBA(0x8FA6C0, 0.12))
+            grid: RGBA(0x8FA6C0, 0.12), river: RGBA(0x4C88AE))
     }
 
     /// Tile zoom whose resolution roughly matches the output.
@@ -198,7 +199,8 @@ public enum TerrainRenderer {
     }
 
     /// Renders an RGBA image of `n`×`n` pixels. `pixelScale` is pixels per point (for line widths).
-    public static func render(elevation input: [Float], n: Int, pixelScale: Double, rect: WorldRect, style: Style) -> CGImage? {
+    public static func render(elevation input: [Float], n: Int, pixelScale: Double, rect: WorldRect, style: Style,
+                              water: WaterFeatures? = nil) -> CGImage? {
         guard input.count == n * n, n > 4 else { return nil }
         var e = input
         // Two box-blur passes soften DEM noise so the contours read as clean paper edges.
@@ -312,12 +314,87 @@ public enum TerrainRenderer {
                 buf[o + 3] = 255
             }
         }
+        if let water { drawWater(water, into: &buf, n: n, pixelScale: pixelScale, rect: rect, style: style) }
         let data = Data(buf) as CFData
         guard let provider = CGDataProvider(data: data) else { return nil }
         return CGImage(width: n, height: n, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: n * 4,
                        space: CGColorSpace(name: CGColorSpace.sRGB)!,
                        bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
                        provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
+    }
+
+    /// Paints lakes, sea and rivers from OpenStreetMap over the relief.
+    static func drawWater(_ w: WaterFeatures, into buf: inout [UInt8], n: Int, pixelScale: Double, rect: WorldRect, style: Style) {
+        buf.withUnsafeMutableBytes { raw in
+            guard let ctx = CGContext(data: raw.baseAddress, width: n, height: n, bitsPerComponent: 8, bytesPerRow: n * 4,
+                                      space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                      bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return }
+            // Row 0 of the buffer is the top of the map.
+            ctx.translateBy(x: 0, y: CGFloat(n))
+            ctx.scaleBy(x: 1, y: -1)
+            func pt(_ p: WorldPoint) -> CGPoint {
+                CGPoint(x: (p.x - rect.minX) / rect.width * Double(n), y: (p.y - rect.minY) / rect.height * Double(n))
+            }
+            func cg(_ c: RGBA) -> CGColor { CGColor(srgbRed: c.r, green: c.g, blue: c.b, alpha: c.a) }
+            let view = CGRect(x: -20, y: -20, width: n + 40, height: n + 40)
+
+            // Rivers, canals and streams first: where a river widens into a mapped water body,
+            // the body's fill covers its centerline.
+            ctx.setLineCap(.round)
+            ctx.setLineJoin(.round)
+            // Plains crossed by dense canal networks (e.g. the Yangtze delta) get finer, lighter lines.
+            var length = 0.0
+            for line in w.lines {
+                let p = line.points.map(pt)
+                for j in 1..<max(1, p.count) where j < p.count { length += hypot(p[j].x - p[j - 1].x, p[j].y - p[j - 1].y) }
+            }
+            let density = length / Double(n) / Double(n) * 100 / pixelScale
+            let thin = density > 3 ? 0.65 : 1.0
+            for kind in [WaterFeatures.LineKind.stream, .canal, .river] {
+                let width: Double, alpha: Double
+                switch kind {
+                case .river: (width, alpha) = (1.2 * thin, thin < 1 ? 0.75 : 1)
+                case .canal: (width, alpha) = (0.7 * thin, 0.6)
+                case .stream: (width, alpha) = (0.55 * thin, 0.5)
+                }
+                var c = style.river
+                c.a *= alpha
+                ctx.setStrokeColor(cg(c))
+                ctx.setLineWidth(width * pixelScale)
+                for line in w.lines where line.kind == kind {
+                    let path = CGMutablePath()
+                    path.addLines(between: line.points.map(pt))
+                    guard path.boundingBox.intersects(view) else { continue }
+                    ctx.addPath(path)
+                }
+                ctx.strokePath()
+            }
+
+            // Water bodies: fill, then outline only real shores (not tile clip edges).
+            ctx.setFillColor(cg(style.water))
+            for area in w.areas {
+                let path = CGMutablePath()
+                for ring in area.rings { path.addLines(between: ring.map(pt)); path.closeSubpath() }
+                guard path.boundingBox.intersects(view) else { continue }
+                ctx.addPath(path)
+                ctx.fillPath(using: .evenOdd)
+            }
+            ctx.setStrokeColor(cg(style.shore))
+            ctx.setLineWidth(max(1, 0.6 * pixelScale))
+            for area in w.areas {
+                for (ring, clipped) in zip(area.rings, area.clipped) {
+                    let pts = ring.map(pt)
+                    let path = CGMutablePath()
+                    for j in 0..<pts.count where !clipped[j] {
+                        path.move(to: pts[j])
+                        path.addLine(to: pts[(j + 1) % pts.count])
+                    }
+                    guard path.boundingBox.intersects(view) else { continue }
+                    ctx.addPath(path)
+                }
+            }
+            ctx.strokePath()
+        }
     }
 
     private static func mix(_ a: RGBA, _ b: RGBA, _ t: Double) -> RGBA {
