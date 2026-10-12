@@ -163,15 +163,8 @@ struct PanelChrome: View {
                 return nil
             }
         }
-        guard tracker.status == .live, tracker.aircraft.isEmpty else { return nil }
-        let r = Format.km(model.settings.radiusKm)
-        if tracker.filter != nil {
-            return ("\(r) 公里内没有符合过滤条件的航班", "范围内共有 \(tracker.rawInRadius) 架飞机，可在设置中调整过滤。", false)
-        }
-        let sub = tracker.emptyStreak >= 3
-            ? "若长期如此，可能是这一带的社区 ADS-B 接收站覆盖有限，可在设置中扩大范围。"
-            : nil
-        return ("\(r) 公里内暂时没有飞机", sub, false)
+        // An empty sky needs no message: the count chip already says "0 架".
+        return nil
     }
 
     private func chip(_ text: String, warn: Bool, prominent: Bool = false) -> some View {
