@@ -387,6 +387,7 @@ final class VectorTileTests: XCTestCase {
                         + layer("waterway", type: 2, cls: "river", geometry: river)
                         + layer("waterway", type: 2, cls: "river", geometry: tunnel, extra: [("brunnel", "tunnel")]))
         let w = try VectorTileDecoder.decode(data, z: 1, x: 0, y: 0)
+        XCTAssertTrue(w.boundaries.isEmpty, "boundary features without admin_level are ignored")
         XCTAssertEqual(w.areas.count, 1, "swimming pools are skipped")
         XCTAssertEqual(w.lines.count, 1, "tunnels and other layers are skipped")
         XCTAssertEqual(w.lines[0].kind, .river)
@@ -394,11 +395,31 @@ final class VectorTileTests: XCTestCase {
         XCTAssertEqual(w.areas[0].rings[0][1].x, 0.25, accuracy: 1e-9)   // 2048/4096 of the left half of the world
     }
 
+    func testBoundaryLevels() throws {
+        // admin_level values are integers in the tile; keep 2 (country) and 4 (province/state).
+        func boundary(level: Int, extra: [(String, UInt64)] = []) -> [UInt8] {
+            var keys = ["admin_level"], ints: [UInt64] = [UInt64(level)]
+            for (k, v) in extra { keys.append(k); ints.append(v) }
+            var tags: [UInt32] = []
+            for i in 0..<keys.count { tags += [UInt32(i), UInt32(i)] }
+            let feature = field(2, packed(tags)) + field(3, varint: 2) + field(4, packed([9, 0, 0, 10, 100, 100]))
+            var l = field(15, varint: 2) + field(1, str("boundary")) + field(2, feature)
+            for k in keys { l += field(3, str(k)) }
+            for v in ints { l += field(4, field(4, varint: v)) }
+            return field(3, l)
+        }
+        let data = Data(boundary(level: 2) + boundary(level: 4, extra: [("disputed", 1)]) + boundary(level: 6)
+                        + boundary(level: 2, extra: [("maritime", 1)]))
+        let w = try VectorTileDecoder.decode(data, z: 3, x: 1, y: 2)
+        XCTAssertEqual(w.boundaries.map(\.level), [2, 4], "municipal and maritime lines are skipped")
+        XCTAssertEqual(w.boundaries.map(\.disputed), [false, true])
+    }
+
     func testRiversAreDrawn() {
         let n = 64
         let e = [Float](repeating: 100, count: n * n)
         let rect = WorldRect(minX: 0, minY: 0, width: 1, height: 1)
-        let w = WaterFeatures(lines: [.init(kind: .river, points: [WorldPoint(x: 0, y: 0.5), WorldPoint(x: 1, y: 0.5)])])
+        let w = MapFeatures(lines: [.init(kind: .river, points: [WorldPoint(x: 0, y: 0.5), WorldPoint(x: 1, y: 0.5)])])
         let img = TerrainRenderer.render(elevation: e, n: n, pixelScale: 2, rect: rect, style: .light, water: w)!
         let data = img.dataProvider!.data! as Data
         let river = TerrainRenderer.Style.light.river

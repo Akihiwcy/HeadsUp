@@ -6,8 +6,9 @@ public struct WorldPoint: Equatable, Sendable {
     public init(x: Double, y: Double) { self.x = x; self.y = y }
 }
 
-/// Rivers, lakes and sea from OpenStreetMap (OpenMapTiles schema), for drawing on the paper map.
-public struct WaterFeatures: Sendable {
+/// Rivers, lakes, sea and administrative boundaries from OpenStreetMap (OpenMapTiles schema),
+/// for drawing on the paper map.
+public struct MapFeatures: Sendable {
     public enum LineKind: Int, Sendable { case river, canal, stream }
 
     public struct Area: Sendable {
@@ -22,18 +23,30 @@ public struct WaterFeatures: Sendable {
         public var points: [WorldPoint]
     }
 
+    /// A national (admin level 2) or first-level subdivision (level 4: province, state, …) border.
+    public struct Boundary: Sendable {
+        public var level: Int
+        /// Marked disputed in OpenStreetMap; drawn more lightly.
+        public var disputed: Bool
+        public var points: [WorldPoint]
+    }
+
     public var areas: [Area] = []
     public var lines: [Line] = []
+    public var boundaries: [Boundary] = []
 
-    public init(areas: [Area] = [], lines: [Line] = []) { self.areas = areas; self.lines = lines }
+    public init(areas: [Area] = [], lines: [Line] = [], boundaries: [Boundary] = []) {
+        self.areas = areas; self.lines = lines; self.boundaries = boundaries
+    }
 
-    public mutating func append(_ other: WaterFeatures) {
+    public mutating func append(_ other: MapFeatures) {
         areas += other.areas
         lines += other.lines
+        boundaries += other.boundaries
     }
 }
 
-/// Minimal Mapbox Vector Tile decoder, reading only the `water` and `waterway` layers.
+/// Minimal Mapbox Vector Tile decoder, reading only the `water`, `waterway` and `boundary` layers.
 public enum VectorTileDecoder {
     struct Reader {
         let bytes: [UInt8]
@@ -92,10 +105,10 @@ public enum VectorTileDecoder {
     static let skippedWaterClasses: Set<String> = ["swimming_pool"]
 
     /// Decodes tile `z/x/y`, converting geometry to world coordinates.
-    public static func decode(_ data: Data, z: Int, x: Int, y: Int) throws -> WaterFeatures {
+    public static func decode(_ data: Data, z: Int, x: Int, y: Int) throws -> MapFeatures {
         let bytes = [UInt8](data)
         var r = Reader(bytes)
-        var out = WaterFeatures()
+        var out = MapFeatures()
         while !r.atEnd {
             let (field, wire) = try r.key()
             if field == 3 && wire == 2 {
@@ -109,8 +122,9 @@ public enum VectorTileDecoder {
     }
 
     private enum Value { case string(String), other }
+    static let layers: Set<String> = ["water", "waterway", "boundary"]
 
-    private static func decodeLayer(_ bytes: [UInt8], _ range: (Int, Int), z: Int, x: Int, y: Int, into out: inout WaterFeatures) throws {
+    private static func decodeLayer(_ bytes: [UInt8], _ range: (Int, Int), z: Int, x: Int, y: Int, into out: inout MapFeatures) throws {
         var r = Reader(bytes, range.0, range.1)
         var name = ""
         var extent = 4096.0
@@ -129,16 +143,24 @@ public enum VectorTileDecoder {
                 var value = Value.other
                 while !v.atEnd {
                     let (f, w) = try v.key()
-                    if f == 1 && w == 2 { value = .string(v.string(try v.lengthDelimited())) } else { try v.skip(w) }
+                    switch (f, w) {
+                    case (1, 2): value = .string(v.string(try v.lengthDelimited()))
+                    case (4, 0), (5, 0): value = .string(String(Int64(bitPattern: try v.varint())))
+                    case (6, 0):
+                        let u = try v.varint()
+                        value = .string(String(Int64(bitPattern: (u >> 1) ^ (0 &- (u & 1)))))
+                    case (7, 0): value = .string(try v.varint() != 0 ? "1" : "0")
+                    default: try v.skip(w)
+                    }
                 }
                 values.append(value)
             case (5, 0): extent = Double(try r.varint())
             default: try r.skip(wire)
             }
             // Stop early for layers we don't draw.
-            if !name.isEmpty && name != "water" && name != "waterway" { return }
+            if !name.isEmpty && !layers.contains(name) { return }
         }
-        guard name == "water" || name == "waterway" else { return }
+        guard layers.contains(name) else { return }
 
         let scale = pow(2.0, Double(z))
         func world(_ px: Int, _ py: Int) -> WorldPoint {
@@ -176,7 +198,7 @@ public enum VectorTileDecoder {
             if name == "water", type == 3 {
                 if let cls = props["class"], skippedWaterClasses.contains(cls) { continue }
                 let e = Int(extent)
-                var area = WaterFeatures.Area(rings: [], clipped: [])
+                var area = MapFeatures.Area(rings: [], clipped: [])
                 for ring in parts where ring.count >= 3 {
                     area.rings.append(ring.map { world($0.0, $0.1) })
                     var flags: [Bool] = []
@@ -188,9 +210,17 @@ public enum VectorTileDecoder {
                     area.clipped.append(flags)
                 }
                 if !area.rings.isEmpty { out.areas.append(area) }
+            } else if name == "boundary", type == 2 {
+                // Country and first-level borders only; maritime limits are not drawn.
+                guard let level = Int(props["admin_level"] ?? ""), level == 2 || level == 4,
+                      props["maritime"] != "1" else { continue }
+                for line in parts where line.count >= 2 {
+                    out.boundaries.append(.init(level: level, disputed: props["disputed"] == "1",
+                                                points: line.map { world($0.0, $0.1) }))
+                }
             } else if name == "waterway", type == 2 {
                 if props["brunnel"] == "tunnel" { continue }
-                let kind: WaterFeatures.LineKind
+                let kind: MapFeatures.LineKind
                 switch props["class"] {
                 case "river": kind = .river
                 case "canal": kind = .canal
@@ -238,12 +268,12 @@ public enum VectorTileDecoder {
 }
 
 /// Fetches OpenFreeMap vector tiles (OpenMapTiles schema, no key) with memory and disk caches.
-public actor WaterTileSource {
+public actor VectorTileSource {
     private let session: URLSession
     private let tileJSON: URL
     private let cacheDir: URL?
     private var template: String?
-    private var memory: [TileKey: WaterFeatures] = [:]
+    private var memory: [TileKey: MapFeatures] = [:]
     private var order: [TileKey] = []
 
     public init(session: URLSession = .shared,
@@ -261,7 +291,7 @@ public actor WaterTileSource {
         return min(max(z, 4), 14)
     }
 
-    public func tile(_ k: TileKey) async -> WaterFeatures? {
+    public func tile(_ k: TileKey) async -> MapFeatures? {
         if let t = memory[k] { return t }
         let file = cacheDir?.appendingPathComponent("\(k.z)/\(k.x)/\(k.y).pbf")
         var data: Data?

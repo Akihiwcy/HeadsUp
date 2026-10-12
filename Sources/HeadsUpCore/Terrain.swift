@@ -132,6 +132,8 @@ public enum TerrainRenderer {
         public var shadow: RGBA, highlight: RGBA
         public var grid: RGBA
         public var river: RGBA = RGBA(0x5B97BD)
+        public var border: RGBA = RGBA(0x6B4A32, 0.85)
+        public var borderHalo: RGBA = RGBA(0xFFFFFF, 0.7)
 
         public static let light = Style(
             paperLow: RGBA(0xF0ECE3), paperHigh: RGBA(0xFFFFFF),
@@ -145,7 +147,8 @@ public enum TerrainRenderer {
             water: RGBA(0x0E2536), shore: RGBA(0x5B93B8, 0.8),
             majorLine: RGBA(0xE8DCC8, 0.42), minorLine: RGBA(0xE8DCC8, 0.14),
             shadow: RGBA(0x000000, 0.62), highlight: RGBA(0xFFFFFF, 0.08),
-            grid: RGBA(0x8FA6C0, 0.12), river: RGBA(0x4C88AE))
+            grid: RGBA(0x8FA6C0, 0.12), river: RGBA(0x4C88AE),
+            border: RGBA(0xE8DCC8, 0.75), borderHalo: RGBA(0x0D1319, 0.6))
     }
 
     /// Tile zoom whose resolution roughly matches the output.
@@ -200,7 +203,7 @@ public enum TerrainRenderer {
 
     /// Renders an RGBA image of `n`×`n` pixels. `pixelScale` is pixels per point (for line widths).
     public static func render(elevation input: [Float], n: Int, pixelScale: Double, rect: WorldRect, style: Style,
-                              water: WaterFeatures? = nil) -> CGImage? {
+                              water: MapFeatures? = nil) -> CGImage? {
         guard input.count == n * n, n > 4 else { return nil }
         var e = input
         // Two box-blur passes soften DEM noise so the contours read as clean paper edges.
@@ -314,7 +317,7 @@ public enum TerrainRenderer {
                 buf[o + 3] = 255
             }
         }
-        if let water { drawWater(water, into: &buf, n: n, pixelScale: pixelScale, rect: rect, style: style) }
+        if let water { drawVectors(water, into: &buf, n: n, pixelScale: pixelScale, rect: rect, style: style) }
         let data = Data(buf) as CFData
         guard let provider = CGDataProvider(data: data) else { return nil }
         return CGImage(width: n, height: n, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: n * 4,
@@ -323,8 +326,8 @@ public enum TerrainRenderer {
                        provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
     }
 
-    /// Paints lakes, sea and rivers from OpenStreetMap over the relief.
-    static func drawWater(_ w: WaterFeatures, into buf: inout [UInt8], n: Int, pixelScale: Double, rect: WorldRect, style: Style) {
+    /// Paints lakes, sea, rivers and administrative borders from OpenStreetMap over the relief.
+    static func drawVectors(_ w: MapFeatures, into buf: inout [UInt8], n: Int, pixelScale: Double, rect: WorldRect, style: Style) {
         buf.withUnsafeMutableBytes { raw in
             guard let ctx = CGContext(data: raw.baseAddress, width: n, height: n, bitsPerComponent: 8, bytesPerRow: n * 4,
                                       space: CGColorSpace(name: CGColorSpace.sRGB)!,
@@ -350,7 +353,7 @@ public enum TerrainRenderer {
             }
             let density = length / Double(n) / Double(n) * 100 / pixelScale
             let thin = density > 3 ? 0.65 : 1.0
-            for kind in [WaterFeatures.LineKind.stream, .canal, .river] {
+            for kind in [MapFeatures.LineKind.stream, .canal, .river] {
                 let width: Double, alpha: Double
                 switch kind {
                 case .river: (width, alpha) = (1.2 * thin, thin < 1 ? 0.75 : 1)
@@ -394,6 +397,35 @@ public enum TerrainRenderer {
                 }
             }
             ctx.strokePath()
+
+            // Administrative borders on top: a soft halo, then a dashed line. Countries are heavier
+            // than provinces/states; disputed lines are lighter.
+            let borders = w.boundaries.filter { b in
+                b.points.contains { p in
+                    let q = pt(p)
+                    return q.x > -20 && q.y > -20 && q.x < Double(n) + 20 && q.y < Double(n) + 20
+                }
+            }
+            for b in borders {
+                let path = CGMutablePath()
+                path.addLines(between: b.points.map(pt))
+                let country = b.level <= 2
+                let width = (country ? 1.8 : 1.2) * pixelScale
+                ctx.addPath(path)
+                ctx.setLineDash(phase: 0, lengths: [])
+                ctx.setStrokeColor(cg(style.borderHalo))
+                ctx.setLineWidth(width + 2 * pixelScale)
+                ctx.strokePath()
+                var c = style.border
+                if b.disputed { c.a *= 0.55 }
+                ctx.addPath(path)
+                ctx.setStrokeColor(cg(c))
+                ctx.setLineWidth(width)
+                let dash: [CGFloat] = country ? [7, 2.5, 1.5, 2.5] : [4, 3]
+                ctx.setLineDash(phase: 0, lengths: dash.map { $0 * CGFloat(pixelScale) })
+                ctx.strokePath()
+            }
+            ctx.setLineDash(phase: 0, lengths: [])
         }
     }
 

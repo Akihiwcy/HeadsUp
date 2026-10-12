@@ -12,7 +12,7 @@ final class TerrainModel: ObservableObject {
     @Published private(set) var loading = false
 
     private let source: TerrainTileSource
-    private let waterSource = WaterTileSource()
+    private let waterSource = VectorTileSource()
     private var task: Task<Void, Never>?
     private var key: Key?
 
@@ -37,10 +37,10 @@ final class TerrainModel: ObservableObject {
             let rect = WorldRect.around(k.center, halfWidthMeters: k.radiusKm * 1000 / Projector.ringFraction)
             let zoom = TerrainRenderer.zoom(for: rect, pixels: k.pixels)
             let keys = TerrainRenderer.tiles(for: rect, zoom: zoom)
-            let waterKeys = TerrainRenderer.tiles(for: rect, zoom: WaterTileSource.zoom(for: rect))
-            async let waterResult: (WaterFeatures, Int) = withTaskGroup(of: WaterFeatures?.self) { [waterSource] group in
+            let waterKeys = TerrainRenderer.tiles(for: rect, zoom: VectorTileSource.zoom(for: rect))
+            async let waterResult: (MapFeatures, Int) = withTaskGroup(of: MapFeatures?.self) { [waterSource] group in
                 for t in waterKeys { group.addTask { await waterSource.tile(t) } }
-                var all = WaterFeatures(), got = 0
+                var all = MapFeatures(), got = 0
                 for await w in group { if let w { all.append(w); got += 1 } }
                 return (all, got)
             }
