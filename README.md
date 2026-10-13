@@ -2,7 +2,9 @@
 
 一款 macOS 原生桌面小组件：一块正方形的纸雕风格地图面板，实时显示你周围（默认 20 公里）天空中的飞机。
 
-![浅色（含河流）](docs/screenshots/rivers-light.png) ![深色 + 航班详情](docs/screenshots/paper-dark-detail.png)
+| 纸感 | 标准 | 卫星 |
+| :-: | :-: | :-: |
+| <img src="docs/screenshots/style-paper.png" alt="纸感地图" width="240"> | <img src="docs/screenshots/style-standard.png" alt="标准地图" width="240"> | <img src="docs/screenshots/style-satellite.png" alt="卫星地图" width="240"> |
 
 ## 运行
 
