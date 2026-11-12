@@ -218,6 +218,69 @@ final class TrackerTests: XCTestCase {
         XCTAssertEqual(t.emptyStreak, 2)
     }
 
+    func testFlightradar24SuppliesPositionsWhenCommunityFeedIsEmpty() async throws {
+        let empty = StubFeed("community", .success([]))
+        let tracker = makeTracker([empty], radius: 20)
+        tracker.center = Coordinate(latitude: 30.2295, longitude: 120.4345)
+        clock = ISO8601DateFormatter().date(from: "2026-11-12T21:30:00Z")!
+        await tracker.pollOnce()
+        XCTAssertTrue(tracker.aircraft.isEmpty)
+
+        StubURLProtocol.handler = { request in
+            XCTAssertEqual(request.url?.host, "fr24api.flightradar24.com")
+            XCTAssertEqual(request.url?.path, "/api/live/flight-positions/full")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer test-key")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Accept-Version"), "v1")
+            XCTAssertFalse(request.url?.absoluteString.contains("test-key") ?? true)
+            let bounds = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?
+                .queryItems?.first { $0.name == "bounds" }?.value?.split(separator: ",").compactMap { Double($0) } ?? []
+            XCTAssertEqual(bounds.count, 4)
+            if bounds.count == 4 {
+                XCTAssertGreaterThan(bounds[0], 30.2295)
+                XCTAssertLessThan(bounds[1], 30.2117)
+                XCTAssertLessThan(bounds[2], 120.3943)
+                XCTAssertGreaterThan(bounds[3], 120.4345)
+            }
+            return (200, """
+            {"data":[
+              {"fr24_id":"428c5e07","hex":"7BB010","flight":"O37069","callsign":"CSS7069",
+               "lat":30.2117,"lon":120.3943,"alt":275,"track":62,"gspeed":140,"vspeed":-576,
+               "timestamp":"2026-11-12T21:29:45Z","source":"ADSB","reg":"B-2924","type":"B733"},
+              {"fr24_id":"outside","hex":"7bb011","lat":30.40,"lon":120.62,"timestamp":"2026-11-12T21:29:45Z"},
+              {"fr24_id":"stale","hex":"7bb012","lat":30.23,"lon":120.43,"timestamp":"2026-11-12T21:28:45Z"},
+              {"fr24_id":"estimated","hex":"7bb013","lat":30.23,"lon":120.43,"timestamp":"2026-11-12T21:29:45Z","source":"ESTIMATION"}
+            ]}
+            """)
+        }
+        defer { StubURLProtocol.handler = nil }
+        let feed = Flightradar24Feed(apiKey: "test-key", session: StubURLProtocol.session())
+        tracker.setPreferredFeed(feed, minimumInterval: Flightradar24Feed.pollInterval)
+        let wait = await tracker.pollOnce()
+        XCTAssertEqual(wait, 30)
+        XCTAssertEqual(tracker.activeFeedName, "Flightradar24")
+        XCTAssertEqual(tracker.rawCount, 3)
+        XCTAssertEqual(tracker.rawInRadius, 1)
+        XCTAssertEqual(tracker.aircraft.map(\.id), ["7bb010"])
+        let aircraft = try XCTUnwrap(tracker.aircraft.first?.aircraft)
+        XCTAssertEqual(aircraft.callsign, "CSS7069")
+        XCTAssertEqual(aircraft.verticalRateFpm, -576)
+        XCTAssertEqual(aircraft.positionTime, clock.addingTimeInterval(-15))
+
+        clock = clock.addingTimeInterval(1)
+        tracker.radiusKm = 50
+        StubURLProtocol.handler = { _ in
+            XCTFail("a refresh must respect the paid API interval")
+            return (500, "")
+        }
+        let remaining = await tracker.pollOnce()
+        XCTAssertEqual(remaining, 29)
+        tracker.setPreferredFeed(nil)
+        await tracker.pollOnce()
+        XCTAssertEqual(tracker.activeFeedName, "community")
+        XCTAssertEqual(empty.calls, 2)
+        XCTAssertTrue(tracker.aircraft.isEmpty)
+    }
+
     func testNoCenterWaitsForLocation() async {
         let t = FlightTracker(feeds: [StubFeed("a", .success([]))], radiusKm: 20, monitorNetwork: false)
         t.isPaused = true
@@ -348,17 +411,20 @@ final class SettingsTests: XCTestCase {
         let s1 = SettingsStore(defaults: d)
         XCTAssertEqual(s1.radiusKm, 20, "default tracking radius is 20 km")
         XCTAssertEqual(s1.mapLook, .paper)
+        XCTAssertFalse(s1.useFlightradar24)
         s1.radiusKm = 35
         s1.appearance = .dark
         s1.panelLevel = .floating
         s1.filterText = "UAL"
         s1.filterEnabled = true
+        s1.useFlightradar24 = true
         s1.manualLocation = Coordinate(latitude: 1, longitude: 2)
         let s2 = SettingsStore(defaults: d)
         XCTAssertEqual(s2.radiusKm, 35)
         XCTAssertEqual(s2.appearance, .dark)
         XCTAssertEqual(s2.panelLevel, .floating)
         XCTAssertEqual(s2.filterText, "UAL")
+        XCTAssertTrue(s2.useFlightradar24)
         XCTAssertTrue(s2.filterEnabled)
         XCTAssertEqual(s2.manualLocation, Coordinate(latitude: 1, longitude: 2))
         s2.radiusKm = 9999

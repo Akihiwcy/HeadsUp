@@ -44,6 +44,7 @@ public final class FlightTracker: ObservableObject {
     @Published public private(set) var status: Status = .waitingForLocation
     @Published public private(set) var lastSuccess: Date?
     @Published public private(set) var activeFeedName: String?
+    @Published public private(set) var preferredFeed: FlightFeed?
     /// Successful polls in a row that returned no aircraft within the radius.
     @Published public private(set) var emptyStreak = 0
     /// Number of aircraft the feed returned before the exact radius filter (for diagnostics).
@@ -102,6 +103,8 @@ public final class FlightTracker: ObservableObject {
     private var loop: Task<Void, Never>?
     private var failures = 0
     private var rotation = 0
+    private var preferredPollInterval: TimeInterval = 0
+    private var nextPreferredPoll = Date.distantPast
     private var lastSweep: (center: Coordinate, radius: Double)?
     private var cooldowns: [String: (until: Date, strikes: Int)] = [:]
     private var pathMonitor: NWPathMonitor?
@@ -122,7 +125,27 @@ public final class FlightTracker: ObservableObject {
         pathMonitor?.cancel()
     }
 
-    /// Cancels any pending wait and polls immediately.
+    /// Selects a source that can query the whole view in one poll, or restores the community feeds.
+    public func setPreferredFeed(_ feed: FlightFeed?, minimumInterval: TimeInterval = 0) {
+        guard preferredFeed != nil || feed != nil else { return }
+        if let name = preferredFeed?.name { cooldowns[name] = nil }
+        preferredFeed = feed
+        preferredPollInterval = max(pollInterval, minimumInterval)
+        nextPreferredPoll = .distantPast
+        latest = []
+        lastSweep = nil
+        failures = 0
+        emptyStreak = 0
+        rawCount = 0
+        partialCoverage = false
+        lastSuccess = nil
+        activeFeedName = nil
+        status = center == nil ? .waitingForLocation : .loading
+        refilter()
+        refreshNow()
+    }
+
+    /// Cancels any pending wait and restarts polling, subject to the selected source's interval.
     public func refreshNow() {
         loop?.cancel()
         guard !isPaused else { return }
@@ -146,12 +169,25 @@ public final class FlightTracker: ObservableObject {
         }
         // Keep showing the last error while retrying, rather than flipping back to "loading".
         if lastSuccess == nil && failures == 0 { status = .loading }
-        let plan = Self.queryPlan(center: center, radiusKm: radiusKm)
-        rotation += 1
-        if plan.count > 1 { return await pollWide(center: center, plan: plan) }
+        let order: [FlightFeed]
+        let interval: TimeInterval
+        if let preferredFeed {
+            let t = now()
+            let readyAt = max(nextPreferredPoll, cooldowns[preferredFeed.name]?.until ?? .distantPast)
+            if readyAt > t { return readyAt.timeIntervalSince(t) }
+            nextPreferredPoll = t.addingTimeInterval(preferredPollInterval)
+            order = [preferredFeed]
+            interval = preferredPollInterval
+        } else {
+            let plan = Self.queryPlan(center: center, radiusKm: radiusKm)
+            rotation += 1
+            if plan.count > 1 { return await pollWide(center: center, plan: plan) }
+            order = feedsInOrder()
+            interval = adaptiveInterval
+        }
         partialCoverage = false
         var firstError: FeedError?
-        for feed in feedsInOrder() {
+        for feed in order {
             do {
                 let list = try await feed.fetch(center: center, radiusKm: radiusKm)
                 if Task.isCancelled { return pollInterval }
@@ -160,7 +196,7 @@ public final class FlightTracker: ObservableObject {
                 guard self.center.map({ Geo.distance($0, center) < 1000 }) ?? false else { return 0.1 }
                 activeFeedName = feed.name
                 ingest(list)
-                return adaptiveInterval
+                return interval
             } catch is CancellationError {
                 return pollInterval
             } catch let e as FeedError {
@@ -173,7 +209,8 @@ public final class FlightTracker: ObservableObject {
             if Task.isCancelled { return pollInterval }
         }
         fail(firstError ?? .network("未知错误"))
-        return min(60, pollInterval * pow(2, Double(min(failures, 4)) - 1))
+        let retry = min(60, pollInterval * pow(2, Double(min(failures, 4)) - 1))
+        return max(retry, preferredFeed == nil ? 0 : preferredPollInterval)
     }
 
     /// Centers of query circles (radius `maxSingleQueryKm`) that together cover the disk of

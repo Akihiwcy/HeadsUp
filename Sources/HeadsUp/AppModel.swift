@@ -7,6 +7,7 @@ import MapKit
 @MainActor
 final class AppModel: ObservableObject {
     enum CenterSource: Equatable { case live, manual, lastKnown, none }
+    private static let flightradar24KeyAccount = "flightradar24-positions"
 
     let settings: SettingsStore
     let location: LocationService
@@ -77,6 +78,8 @@ final class AppModel: ObservableObject {
         tracker.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }.store(in: &bag)
         settings.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }.store(in: &bag)
         settings.$routeProvider.sink { [weak self] kind in self?.applyRouteProvider(kind) }.store(in: &bag)
+        settings.$useFlightradar24.removeDuplicates()
+            .sink { [weak self] enabled in self?.applyFlightradar24(enabled: enabled) }.store(in: &bag)
         settings.$mapDragEnabled.sink { [weak self] on in if !on { self?.resetView() } }.store(in: &bag)
         location.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }.store(in: &bag)
 
@@ -137,6 +140,21 @@ final class AppModel: ObservableObject {
             let active = enabled && !built.filter.tokens.isEmpty
             tracker.filter = active ? built.filter : nil
             if let id = selectedID, !tracker.aircraft.contains(where: { $0.id == id }) { select(nil) }
+        }
+    }
+
+    func setFlightradar24Key(_ key: String) -> Bool {
+        let key = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard Keychain.set(key, for: Self.flightradar24KeyAccount) else { return false }
+        applyFlightradar24(enabled: settings.useFlightradar24)
+        return true
+    }
+
+    private func applyFlightradar24(enabled: Bool) {
+        if enabled, let key = Keychain.get(Self.flightradar24KeyAccount), !key.isEmpty {
+            tracker.setPreferredFeed(Flightradar24Feed(apiKey: key), minimumInterval: Flightradar24Feed.pollInterval)
+        } else {
+            tracker.setPreferredFeed(nil)
         }
     }
 

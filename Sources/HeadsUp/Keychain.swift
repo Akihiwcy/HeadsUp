@@ -1,7 +1,7 @@
 import Foundation
 import Security
 
-/// Stores the route service API key in the login Keychain.
+/// Stores data service API keys in the login Keychain.
 enum Keychain {
     static let service = "app.headsup.HeadsUp.routes"
 
@@ -18,10 +18,16 @@ enum Keychain {
     static func set(_ value: String?, for account: String) -> Bool {
         let base: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
                                    kSecAttrAccount as String: account]
-        SecItemDelete(base as CFDictionary)
-        guard let value, !value.isEmpty else { return true }
+        guard let value, !value.isEmpty else {
+            let status = SecItemDelete(base as CFDictionary)
+            return status == errSecSuccess || status == errSecItemNotFound
+        }
+        let data = Data(value.utf8)
+        let status = SecItemUpdate(base as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        if status == errSecSuccess { return true }
+        guard status == errSecItemNotFound else { return false }
         var add = base
-        add[kSecValueData as String] = Data(value.utf8)
+        add[kSecValueData as String] = data
         return SecItemAdd(add as CFDictionary, nil) == errSecSuccess
     }
 }

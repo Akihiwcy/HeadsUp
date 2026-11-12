@@ -22,6 +22,8 @@ struct SettingsView: View {
     @State private var loginError: String?
     @State private var routeKeyDraft = ""
     @State private var routeTestResult: String?
+    @State private var flightradar24KeyDraft = ""
+    @State private var flightradar24KeyError: String?
 
     struct SearchResult: Identifiable {
         let id = UUID()
@@ -175,11 +177,43 @@ struct SettingsView: View {
             }
 
             Section("数据来源") {
-                LabeledContent("飞机位置") { Text("adsb.lol（备用 adsb.fi），每 5 秒更新").foregroundStyle(.secondary) }
+                Toggle("使用 Flightradar24 飞机位置", isOn: $settings.useFlightradar24)
+                if settings.useFlightradar24 {
+                    let hasKey = tracker.preferredFeed != nil
+                    if !hasKey {
+                        Text("开通独立的 Flightradar24 API 订阅，在控制台的 Key management 创建正式 API Key，再粘贴到这里。")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Link("如何创建 API Key", destination: URL(string: "https://fr24api.flightradar24.com/docs/authentication")!)
+                    }
+                    HStack {
+                        SecureField("API Key", text: $flightradar24KeyDraft,
+                                    prompt: Text(hasKey ? "已保存到钥匙串" : "粘贴 Flightradar24 API Key"))
+                        Button("保存") { saveFlightradar24Key(flightradar24KeyDraft) }
+                            .disabled(flightradar24KeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        if hasKey {
+                            Button("移除") { saveFlightradar24Key("") }
+                        }
+                    }
+                    if let error = flightradar24KeyError {
+                        Text(error).font(.callout).foregroundStyle(.orange)
+                    }
+                    if hasKey, case .error(let message) = tracker.status {
+                        Text(message).font(.callout).foregroundStyle(.orange)
+                    }
+                    Text("位置约每 \(Int(Flightradar24Feed.pollInterval)) 秒更新，查询会消耗 API 额度。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Link("Flightradar24 API 订阅与额度", destination: URL(string: "https://fr24api.flightradar24.com/subscriptions-and-credits/")!)
+                }
+                LabeledContent("飞机位置") {
+                    Text(tracker.preferredFeed?.name ?? "社区 ADS-B（adsb.lol、adsb.fi）")
+                        .foregroundStyle(.secondary)
+                }
                 LabeledContent("航线与机型") { Text("adsbdb.com，点击飞机时查询").foregroundStyle(.secondary) }
                 LabeledContent("最近一次更新") { Text(lastUpdateText).foregroundStyle(.secondary) }
-                Text("数据来自社区 ADS-B 接收网络，覆盖程度因地区而异；未广播的信息会显示为“—”。")
-                    .font(.caption).foregroundStyle(.secondary)
+                if !settings.useFlightradar24 {
+                    Text("杭州等地区的社区 ADS-B 覆盖有限。你可以自行配置 Flightradar24 API Key 来查询飞机位置。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
         }
         .formStyle(.grouped)
@@ -222,7 +256,19 @@ struct SettingsView: View {
         guard let t = tracker.lastSuccess else { return "尚无" }
         let f = DateFormatter()
         f.dateFormat = "HH:mm:ss"
-        return "\(f.string(from: t)) · \(tracker.activeFeedName ?? "") · 范围内 \(tracker.aircraft.count) 架"
+        let count = tracker.status == .live && tracker.rawInRadius == 0 && !tracker.partialCoverage && tracker.wideProgress == nil
+            ? "数据源暂未报告范围内的飞机"
+            : "范围内 \(tracker.aircraft.count) 架"
+        return "\(f.string(from: t)) · \(tracker.activeFeedName ?? "") · \(count)"
+    }
+
+    private func saveFlightradar24Key(_ key: String) {
+        if model.setFlightradar24Key(key) {
+            flightradar24KeyDraft = ""
+            flightradar24KeyError = nil
+        } else {
+            flightradar24KeyError = "无法更新钥匙串中的 Flightradar24 API Key"
+        }
     }
 
     private func setLoginItem(_ on: Bool) {

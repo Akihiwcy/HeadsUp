@@ -27,6 +27,7 @@ public final class SettingsStore: ObservableObject {
     @Published public var filterEnabled: Bool { didSet { defaults.set(filterEnabled, forKey: Keys.filterOn) } }
     /// Airline codes and flight numbers, comma separated, e.g. "UAL, MU5101".
     @Published public var filterText: String { didSet { defaults.set(filterText, forKey: Keys.filterText) } }
+    @Published public var useFlightradar24: Bool { didSet { defaults.set(useFlightradar24, forKey: Keys.useFlightradar24) } }
     /// Optional flight-status service for routes; its API key lives in the Keychain, not here.
     @Published public var routeProvider: RouteProviderKind { didSet { defaults.set(routeProvider.rawValue, forKey: Keys.routeProvider) } }
     /// Whether dragging the map pans the view (the origin stays put).
@@ -41,6 +42,7 @@ public final class SettingsStore: ObservableObject {
         static let labels = "showLabels", useManual = "useManualLocation", manual = "manualLocation"
         static let manualName = "manualLocationName", lastKnown = "lastKnownLocation"
         static let filterOn = "filterEnabled", filterText = "filterText", panelFrame = "panelFrame", mapDrag = "mapDragEnabled", routeProvider = "routeProvider"
+        static let useFlightradar24 = "useFlightradar24"
     }
 
     public init(defaults: UserDefaults = .standard) {
@@ -57,6 +59,7 @@ public final class SettingsStore: ObservableObject {
         lastKnownLocation = Self.load(defaults, Keys.lastKnown)
         filterEnabled = defaults.bool(forKey: Keys.filterOn)
         filterText = defaults.string(forKey: Keys.filterText) ?? ""
+        useFlightradar24 = defaults.bool(forKey: Keys.useFlightradar24)
         mapDragEnabled = defaults.bool(forKey: Keys.mapDrag)
         routeProvider = RouteProviderKind(rawValue: defaults.string(forKey: Keys.routeProvider) ?? "") ?? .none
         let f = defaults.array(forKey: Keys.panelFrame) as? [Double]

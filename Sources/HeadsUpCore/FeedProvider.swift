@@ -38,26 +38,8 @@ public struct ReadsbFeed: FlightFeed {
 
     public func fetch(center: Coordinate, radiusKm: Double) async throws -> [Aircraft] {
         var req = URLRequest(url: makeURL(center, Self.queryRadiusNM(forKm: radiusKm)))
-        req.timeoutInterval = 12
         req.setValue("HeadsUp/1.0 (macOS desktop aircraft widget)", forHTTPHeaderField: "User-Agent")
-        req.cachePolicy = .reloadIgnoringLocalCacheData
-        let data: Data, response: URLResponse
-        do {
-            (data, response) = try await session.data(for: req)
-        } catch let e as URLError {
-            switch e.code {
-            case .notConnectedToInternet, .networkConnectionLost, .dataNotAllowed, .internationalRoamingOff:
-                throw FeedError.offline
-            case .cancelled:
-                throw CancellationError()
-            default:
-                throw FeedError.network(e.localizedDescription)
-            }
-        }
-        if let http = response as? HTTPURLResponse {
-            if http.statusCode == 429 { throw FeedError.rateLimited }
-            guard (200..<300).contains(http.statusCode) else { throw FeedError.http(http.statusCode) }
-        }
+        let data = try await fetchFeedData(req, session: session)
         do {
             return try ReadsbDecoder.decode(data)
         } catch let e as FeedError {
@@ -66,4 +48,28 @@ public struct ReadsbFeed: FlightFeed {
             throw FeedError.badResponse("无法解析")
         }
     }
+}
+
+func fetchFeedData(_ request: URLRequest, session: URLSession) async throws -> Data {
+    var request = request
+    request.timeoutInterval = 12
+    request.cachePolicy = .reloadIgnoringLocalCacheData
+    let data: Data, response: URLResponse
+    do {
+        (data, response) = try await session.data(for: request)
+    } catch let e as URLError {
+        switch e.code {
+        case .notConnectedToInternet, .networkConnectionLost, .dataNotAllowed, .internationalRoamingOff:
+            throw FeedError.offline
+        case .cancelled:
+            throw CancellationError()
+        default:
+            throw FeedError.network(e.localizedDescription)
+        }
+    }
+    if let http = response as? HTTPURLResponse {
+        if http.statusCode == 429 { throw FeedError.rateLimited }
+        guard (200..<300).contains(http.statusCode) else { throw FeedError.http(http.statusCode) }
+    }
+    return data
 }
