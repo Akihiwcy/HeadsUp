@@ -58,15 +58,23 @@ final class PanelController: NSObject, NSWindowDelegate {
         clampToScreen()
         restored = true
 
-        // Trackpad pinch over the panel zooms the map. A local monitor sees the gesture wherever the
-        // pointer is in the panel, before SwiftUI's hosting view can swallow it.
-        zoomMonitor = NSEvent.addLocalMonitorForEvents(matching: .magnify) { [weak self] event in
-            TestLog.write("magnify window=\(String(describing: event.window?.windowNumber)) panelNo=\(self?.panel.windowNumber ?? -1) mouse=\(NSEvent.mouseLocation) panel=\(self?.panel.frame ?? .zero) phase=\(event.phase.rawValue) mag=\(event.magnification)")
+        // Mouse wheels and trackpad pinches zoom the map. A local monitor also receives events
+        // above aircraft and labels, before SwiftUI's hosting view can swallow them.
+        zoomMonitor = NSEvent.addLocalMonitorForEvents(matching: [.magnify, .scrollWheel]) { [weak self] event in
             guard let self, self.model.settings.mapDragEnabled,
+                  self.panel.isVisible, self.model.displayCenter != nil,
                   event.window === self.panel || (event.window == nil && self.panel.frame.contains(NSEvent.mouseLocation))
             else { return event }
+            if event.type == .scrollWheel {
+                guard event.scrollingDeltaY != 0 else { return event }
+                // Wheel-up always zooms in, regardless of the system's natural-scrolling setting.
+                let delta = Double(event.scrollingDeltaY) * (event.isDirectionInvertedFromDevice ? -1 : 1)
+                self.model.scrollZoom(by: delta, precise: event.hasPreciseScrollingDeltas)
+                if TestLog.enabled { TestControl.noteScroll(event) }
+                return nil
+            }
             let ended = event.phase.contains(.ended) || event.phase.contains(.cancelled)
-            TestLog.write("zoom accepted r=\(self.model.displayRadius)")
+            TestLog.write("zoom accepted r=\(self.model.displayRadius) phase=\(event.phase.rawValue) mag=\(event.magnification)")
             self.model.zoom(to: self.model.displayRadius / max(0.2, 1 + event.magnification), final: ended)
             return nil
         }
@@ -74,6 +82,10 @@ final class PanelController: NSObject, NSWindowDelegate {
         model.settings.$mapDragEnabled.sink { [weak self] on in self?.panel.acceptsKey = on }.store(in: &bag)
         model.settings.$panelLevel.sink { [weak self] in self?.apply(level: $0) }.store(in: &bag)
         model.settings.$appearance.sink { [weak self] in self?.apply(appearance: $0) }.store(in: &bag)
+    }
+
+    deinit {
+        if let zoomMonitor { NSEvent.removeMonitor(zoomMonitor) }
     }
 
     var isVisible: Bool { panel.isVisible }

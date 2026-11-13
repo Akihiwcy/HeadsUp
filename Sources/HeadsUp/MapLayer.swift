@@ -33,6 +33,7 @@ struct MapLayer: View {
     let center: Coordinate
     let radiusKm: Double
     let look: MapLook
+    let interacting: Bool
     @Binding var visibleRect: MKMapRect?
 
     @State private var position: MapCameraPosition = .automatic
@@ -52,8 +53,8 @@ struct MapLayer: View {
             .onChange(of: Key(center: center, radius: radiusKm)) { old, key in
                 let target = Projector.rect(center: key.center, radiusKm: key.radius)
                 // Animate zoom changes; follow pans immediately so the map stays under the pointer.
-                // Settings jumps (20 → 50 km) animate; a pinch's small steps follow directly.
-                if abs(old.radius - key.radius) / max(old.radius, 0.1) > 0.25 {
+                // Only settings jumps animate. Large wheel events should follow input directly too.
+                if !interacting && abs(old.radius - key.radius) / max(old.radius, 0.1) > 0.25 {
                     withAnimation(.easeInOut(duration: 0.7)) { position = .rect(target) }
                 } else {
                     position = .rect(target)

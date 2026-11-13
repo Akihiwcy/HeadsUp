@@ -133,7 +133,8 @@ struct AircraftLayer: View {
             // A label that was already showing tries its old side first and tolerates an aircraft
             // drifting under it; a new one needs a completely clear spot.
             let previous = sticky[p.item.id]
-            let order = previous.map { [$0] + (0..<4).filter { $0 != previous } } ?? Array(0..<4)
+            let order: [Int] = previous.map { old in [old] + candidates.indices.filter { $0 != old } }
+                ?? Array(candidates.indices)
             let fitIndex = order.first { i in
                 let c = candidates[i].0
                 guard bounds.contains(c), !taken.contains(where: { $0.intersects(c) }) else { return false }

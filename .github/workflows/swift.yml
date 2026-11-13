@@ -1,0 +1,30 @@
+name: Swift tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: swift --version
+      - name: Unit and interaction tests
+        run: swift test
+      - name: Release build
+        run: swift build -c release --product HeadsUp
+      - name: Compile test helpers and check command acknowledgements
+        run: |
+          mkdir -p build
+          swiftc scripts/hctl.swift -o build/hctl
+          swiftc scripts/mouse.swift -o build/mouse
+          swift scripts/test_hctl.swift build/hctl

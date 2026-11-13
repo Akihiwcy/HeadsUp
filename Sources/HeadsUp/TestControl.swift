@@ -12,12 +12,57 @@ final class TestControl {
         self.app = app
         observer = DistributedNotificationCenter.default().addObserver(
             forName: Notification.Name("app.headsup.test"), object: nil, queue: .main) { [weak self] note in
-            let command = note.object as? String ?? ""
-            MainActor.assumeIsolated { self?.run(command) }
+            MainActor.assumeIsolated { self?.receive(note) }
         }
     }
 
-    private func run(_ command: String) {
+    /// A marker on the last synthetic wheel event is the barrier between event posting and
+    /// command delivery: a distributed notification can arrive before the mouse event does.
+    private(set) static var lastScrollMarker: Int64 = 0
+
+    static func noteScroll(_ event: NSEvent) {
+        let marker = event.cgEvent?.getIntegerValueField(.eventSourceUserData) ?? 0
+        if marker != 0 { lastScrollMarker = marker }
+    }
+
+    static func waitForScroll(marker: Int64, model: AppModel, timeout: Duration = .seconds(8)) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while lastScrollMarker != marker || model.isInteracting {
+            guard clock.now < deadline else {
+                throw NSError(domain: "HeadsUp.TestControl", code: 1,
+                              userInfo: [NSLocalizedDescriptionKey: "Timed out waiting for the last scroll event and viewport commit."])
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+    }
+
+    private func receive(_ note: Notification) {
+        let command = note.object as? String ?? ""
+        let requestID = note.userInfo?["requestID"] as? String
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            var errorMessage: String?
+            do {
+                if command.hasPrefix("wait-scroll ") {
+                    guard let marker = Int64(command.dropFirst("wait-scroll ".count)), marker != 0 else {
+                        throw NSError(domain: "HeadsUp.TestControl", code: 2,
+                                      userInfo: [NSLocalizedDescriptionKey: "Invalid scroll marker."])
+                    }
+                    try await Self.waitForScroll(marker: marker, model: self.app.model)
+                } else {
+                    try self.run(command)
+                }
+            } catch { errorMessage = error.localizedDescription }
+            if let requestID {
+                DistributedNotificationCenter.default().postNotificationName(
+                    Notification.Name("app.headsup.test.reply"), object: requestID,
+                    userInfo: ["ok": errorMessage == nil, "error": errorMessage ?? ""], deliverImmediately: true)
+            }
+        }
+    }
+
+    private func run(_ command: String) throws {
         let parts = command.split(separator: " ", maxSplits: 1).map(String.init)
         guard let verb = parts.first else { return }
         let arg = parts.count > 1 ? parts[1] : ""
@@ -28,7 +73,7 @@ final class TestControl {
         case "snapshot-settings":
             if let w = app.settingsWindow.nsWindow { Self.capture(window: w, to: arg) }
         case "dump":
-            dump(to: arg)
+            try dump(to: arg)
         case "select":
             if arg == "none" { model.select(nil) }
             else if arg == "first" { model.select(model.tracker.aircraft.first?.id) }
@@ -212,7 +257,15 @@ final class TestControl {
 
     private var lastMenuTitles: [String] = []
 
-    private func dump(to path: String) {
+    /// Paper-map diagnostics must use the current viewport, just like PanelView.
+    static func paperPoint(_ coordinate: Coordinate, model: AppModel, side: CGFloat) -> [Double] {
+        guard let center = model.displayCenter, model.settings.mapLook == .paper else { return [] }
+        let pr = Projector(rect: Projector.rect(center: model.mapCoordinate(center), radiusKm: model.displayRadius), side: side)
+        let point = pr.point(model.mapCoordinate(coordinate))
+        return [point.x, point.y]
+    }
+
+    private func dump(to path: String) throws {
         let m = app.model!
         let t = m.tracker
         let now = Date()
@@ -240,6 +293,12 @@ final class TestControl {
             "locationState": "\(m.location.state)",
             "radiusKm": m.settings.radiusKm,
             "trackerRadiusKm": t.radiusKm,
+            "trackerCenter": t.center.map { [$0.latitude, $0.longitude] } ?? NSNull(),
+            "displayRadiusKm": m.displayRadius,
+            "displayCenter": m.displayCenter.map { [$0.latitude, $0.longitude] } ?? NSNull(),
+            "lastScrollMarker": Self.lastScrollMarker,
+            "mapDragEnabled": m.settings.mapDragEnabled,
+            "dumpTime": now.timeIntervalSince1970,
             "rawCount": t.rawCount,
             "emptyStreak": t.emptyStreak,
             "feed": t.activeFeedName ?? NSNull(),
@@ -257,6 +316,7 @@ final class TestControl {
             "drawnIDs": Array(m.sampleMemory.drawn).sorted(),
             "pinchLog": pinchLog,
             "viewRadiusKm": m.viewRadiusKm ?? NSNull(),
+            "isInteracting": m.isInteracting,
             "viewCenter": m.viewCenter.map { [$0.latitude, $0.longitude] } ?? NSNull(),
             "hasRouteKey": !m.routeKey(for: m.settings.routeProvider).isEmpty,
             "liveRouteError": m.liveRouteError?.localizedDescription ?? NSNull(),
@@ -272,21 +332,15 @@ final class TestControl {
             "appearance": NSApp.effectiveAppearance.name.rawValue,
             "aircraft": t.aircraft.map { a -> [String: Any] in
                 let p = a.displayPosition(at: now)
-                var pt: [Double] = []
-                if let c = m.center, m.settings.mapLook == .paper {
-                    let pr = Projector(rect: Projector.rect(center: c, radiusKm: m.settings.radiusKm), side: f.width)
-                    let q = pr.point(p)
-                    pt = [q.x, q.y]
-                }
+                let pt = Self.paperPoint(p, model: m, side: f.width)
                 return ["point": pt, "hex": a.id, "name": a.aircraft.displayName, "callsign": a.aircraft.callsign ?? "", "type": a.aircraft.typeCode ?? "",
                         "alt": a.aircraft.altitudeFt ?? -1, "distKm": (a.distanceMeters / 10).rounded() / 100,
                         "liveDistKm": m.center.map { (Geo.distance($0, p) / 10).rounded() / 100 } ?? -1,
                         "lat": p.latitude, "lon": p.longitude, "history": a.history.count]
             },
         ]
-        if let data = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys]) {
-            try? data.write(to: URL(fileURLWithPath: path))
-        }
+        let data = try JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys])
+        try data.write(to: URL(fileURLWithPath: path), options: .atomic)
     }
 
     /// Captures one of our own windows (no screen-recording permission needed for own windows).

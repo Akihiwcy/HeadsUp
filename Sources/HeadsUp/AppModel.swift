@@ -27,7 +27,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var viewRadiusKm: Double?
     /// Radius the panel shows (and queries): the zoomed view, or the tracking radius.
     var displayRadius: Double { viewRadiusKm ?? settings.radiusKm }
-    /// True while a pinch or drag is moving the view.
+    /// True while a pinch, scroll or drag is moving the view.
     @Published private(set) var isInteracting = false
     /// True after the user has panned or zoomed away from the default view.
     var isViewAdjusted: Bool { viewCenter != nil || viewRadiusKm != nil }
@@ -44,19 +44,27 @@ final class AppModel: ObservableObject {
     @Published private(set) var filterProblems: [String] = []
     private var iataCache: [String: [String]] = [:]
     private var filterTask: Task<Void, Never>?
+    private var scrollZoomTask: Task<Void, Never>?
+    private let waitForScrollEnd: @MainActor () async throws -> Void
 
     private var gcjProbe: Bool?
     private var probing = false
     private var bag = Set<AnyCancellable>()
 
-    init(settings: SettingsStore, location: LocationService, tracker: FlightTracker, routes: RouteService) {
+    init(settings: SettingsStore, location: LocationService, tracker: FlightTracker, routes: RouteService,
+         waitForScrollEnd: @escaping @MainActor () async throws -> Void = {
+             try await Task.sleep(for: .milliseconds(180))
+         }) {
         self.settings = settings
         self.location = location
         self.tracker = tracker
         self.routes = routes
+        self.waitForScrollEnd = waitForScrollEnd
 
         settings.$radiusKm.removeDuplicates().sink { [weak self] r in
             // A new tracking radius replaces any zoomed view.
+            self?.cancelScrollZoom()
+            self?.isInteracting = false
             self?.viewRadiusKm = nil
             self?.tracker.radiusKm = r
         }.store(in: &bag)
@@ -200,21 +208,54 @@ final class AppModel: ObservableObject {
 
     /// Moves the view while dragging; aircraft are re-queried for the new area when the drag ends.
     func pan(to c: Coordinate, final: Bool) {
+        // A pan takes over a pending wheel zoom. Commit both center and radius when it ends,
+        // without querying the old center or letting a stale wheel callback end the pan.
+        cancelScrollZoom()
         viewCenter = c
         isInteracting = !final
-        if final { tracker.center = c }
+        if final { commitView() }
     }
 
-    /// Zooms the view (pinch); aircraft are re-queried for the new extent when the gesture ends.
+    /// Zooms the view; aircraft are re-queried for the new extent when the interaction ends.
     func zoom(to radius: Double, final: Bool) {
+        guard radius.isFinite else { return }
+        cancelScrollZoom()
         let r = min(max(radius, Self.zoomRange.lowerBound), Self.zoomRange.upperBound)
         viewRadiusKm = r
         isInteracting = !final
-        if final { tracker.radiusKm = r }
+        if final { commitView() }
+    }
+
+    /// Wheel events usually have no ended phase. Refresh once after a short pause instead of
+    /// rebuilding the terrain and querying aircraft for every notch (or high-resolution pixel).
+    func scrollZoom(by delta: Double, precise: Bool) {
+        guard settings.mapDragEnabled, displayCenter != nil,
+              let radius = ScrollZoom.radius(from: displayRadius, delta: delta, precise: precise,
+                                             range: Self.zoomRange) else { return }
+        zoom(to: radius, final: false)
+        scrollZoomTask = Task { [weak self, waitForScrollEnd] in
+            do { try await waitForScrollEnd() }
+            catch { return }
+            guard !Task.isCancelled, let self else { return }
+            self.scrollZoomTask = nil
+            self.zoom(to: self.displayRadius, final: true)
+        }
+    }
+
+    private func cancelScrollZoom() {
+        scrollZoomTask?.cancel()
+        scrollZoomTask = nil
+    }
+
+    private func commitView() {
+        tracker.radiusKm = displayRadius
+        tracker.center = displayCenter
     }
 
     /// Returns the view to the origin (the user's or the manually set location) and the default zoom.
     func resetView() {
+        cancelScrollZoom()
+        isInteracting = false
         guard isViewAdjusted else { return }
         viewCenter = nil
         viewRadiusKm = nil

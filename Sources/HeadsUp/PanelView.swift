@@ -39,7 +39,8 @@ struct PanelView: View {
                         TerrainLayer(terrain: model.terrain, projector: projector(viewMap, side: side))
                             .allowsHitTesting(false)
                     } else {
-                        MapLayer(center: viewMap, radiusKm: radius, look: look, visibleRect: $visibleRect)
+                        MapLayer(center: viewMap, radiusKm: radius, look: look, interacting: model.isInteracting,
+                                 visibleRect: $visibleRect)
                             // Keep Apple's logo and legal link clear of the rounded corners.
                             .safeAreaPadding(EdgeInsets(top: 0, leading: side * 0.075, bottom: side * 0.045, trailing: side * 0.075))
                             .allowsHitTesting(false)
@@ -87,7 +88,7 @@ struct PanelView: View {
     }
 
     private func requestTerrain(side: CGFloat) {
-        // While a pinch or drag is under way the current map image is just moved and scaled;
+        // While a pinch, scroll or drag is under way the current map image is just moved and scaled;
         // the terrain is recomputed once, when the gesture ends.
         guard model.settings.mapLook == .paper, !model.isInteracting, let c = model.displayCenter else { return }
         model.terrain.request(center: c, radiusKm: model.displayRadius,
